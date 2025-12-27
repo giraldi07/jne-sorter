@@ -208,8 +208,8 @@ const App = () => {
               <Package size={20} />
             </div>
             <div className="flex flex-col">
-              <h1 className={`font-black text-sm leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>JNE SMART</h1>
-              <span className={`text-[10px] font-bold opacity-50 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>SORTER PRO v2.1</span>
+              <h1 className={`font-black text-sm leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>JNE SMART SORTER</h1>
+              <span className={`text-[10px] font-bold opacity-50 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>v1.1 by Giraldi P.Y.</span>
             </div>
           </div>
           <button onClick={() => setDarkMode(!darkMode)} className={`p-2 rounded-full ${darkMode ? 'bg-slate-800 text-yellow-400' : 'bg-slate-100 text-slate-600'}`}>
