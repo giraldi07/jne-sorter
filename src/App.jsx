@@ -30,7 +30,7 @@ const App = () => {
     const loadData = async () => {
       try {
         setLoading(true);
-        const response = await fetch('./jne_destination_code.csv');
+        const response = await fetch('/jne_destination_code.csv');
         if (!response.ok) throw new Error('File database tidak ditemukan.');
         const text = await response.text();
         const parsedData = parseCSV(text);
