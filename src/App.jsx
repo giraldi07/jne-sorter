@@ -1,42 +1,92 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Search, Package, MapPin, Mic, MicOff, 
-  History, Star, Sun, Moon, Zap, ArrowRight, Trash2,
-  Info, AlertCircle, Loader2, Volume2
+  History, Star, Sun, Moon, Zap, Trash2,
+  Info, AlertCircle, Loader2, Volume2, X, ChevronRight, BarChart3
 } from 'lucide-react';
 
+// --- UTILS & HOOKS ---
+
+// Hook untuk menunda eksekusi search (Optimasi Performa)
+const useDebounce = (value, delay) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(handler);
+  }, [value, delay]);
+  return debouncedValue;
+};
+
+// Komponen untuk Highlight Teks yang cocok
+const HighlightText = ({ text, highlight }) => {
+  if (!highlight.trim()) return <span>{text}</span>;
+  const regex = new RegExp(`(${highlight})`, 'gi');
+  const parts = text.split(regex);
+  return (
+    <span>
+      {parts.map((part, i) => 
+        regex.test(part) ? <span key={i} className="bg-yellow-300 text-slate-900 px-0.5 rounded-sm">{part}</span> : part
+      )}
+    </span>
+  );
+};
+
+// --- MAIN COMPONENT ---
+
 const App = () => {
+  // State
   const [data, setData] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
   const [isListening, setIsListening] = useState(false);
-  
-  const [history, setHistory] = useState(() => {
-    const saved = localStorage.getItem('jne_history');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [favorites, setFavorites] = useState(() => {
-    const saved = localStorage.getItem('jne_favorites');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [activeTab, setActiveTab] = useState('search'); // 'search' | 'history' | 'favorites'
 
+  // Persistent State
+  const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('jne_history') || '[]'));
+  const [favorites, setFavorites] = useState(() => JSON.parse(localStorage.getItem('jne_favorites') || '[]'));
+
+  // Refs & Debounce
   const searchInputRef = useRef(null);
+  const debouncedSearch = useDebounce(searchTerm, 300); // Tunggu 300ms sebelum search jalan
 
-  // Load Data
+  // Haptic Feedback Helper
+  const vibrate = (pattern = 10) => {
+    if (navigator.vibrate) navigator.vibrate(pattern);
+  };
+
+  // 1. Load Data (Optimized)
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
+        // Simulasi fetch (Ganti path sesuai file asli Anda)
         const response = await fetch('/jne_destination_code.csv');
-        if (!response.ok) throw new Error('File database tidak ditemukan.');
+        if (!response.ok) throw new Error('Database offline.');
         const text = await response.text();
-        const parsedData = parseCSV(text);
-        setData(parsedData);
+        
+        // CSV Parser Worker-friendly logic
+        const lines = text.split('\n');
+        const parsed = [];
+        const regex = /,(?=(?:(?:[^"]*"){2})*[^"]*$)/;
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          const cols = line.split(regex).map(c => c.replace(/^"|"$/g, '').trim());
+          if (cols.length >= 3) {
+            parsed.push({
+              id: `${cols[0]}-${cols[1]}`, // Unique key
+              code: cols[1],
+              sortCode: cols[1]?.substring(0, 3).toUpperCase() || 'UNK',
+              name: cols[2],
+            });
+          }
+        }
+        setData(parsed);
       } catch (err) {
-        setError("Gagal memuat database. Pastikan jne_destination_code.csv ada di folder public.");
+        setError("Gagal memuat database sorting.");
       } finally {
         setLoading(false);
       }
@@ -44,56 +94,51 @@ const App = () => {
     loadData();
   }, []);
 
+  // 2. Theme Toggle
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
+    localStorage.setItem('theme', darkMode ? 'dark' : 'light');
   }, [darkMode]);
 
+  // 3. Persist Data
   useEffect(() => {
     localStorage.setItem('jne_history', JSON.stringify(history));
     localStorage.setItem('jne_favorites', JSON.stringify(favorites));
   }, [history, favorites]);
 
-  const parseCSV = (text) => {
-    const lines = text.split('\n');
-    const result = [];
-    const regex = /,(?=(?:(?:[^"]*"){2})*[^"]*$)/;
-
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      const columns = line.split(regex).map(col => col.replace(/^"|"$/g, '').trim());
-      
-      if (columns.length >= 3) {
-        result.push({
-          id: columns[0],
-          code: columns[1],
-          sortCode: columns[1]?.substring(0, 3).toUpperCase() || '???',
-          name: columns[2],
-        });
-      }
-    }
-    return result;
-  };
-
-  useEffect(() => {
-    if (!searchTerm.trim()) {
-      setResults([]);
-      return;
-    }
-    const lowerTerm = searchTerm.toLowerCase();
-    const filtered = data.filter(item => 
-      item.name.toLowerCase().includes(lowerTerm) || 
-      item.code.toLowerCase().includes(lowerTerm)
-    ).slice(0, 20);
-    setResults(filtered);
-  }, [searchTerm, data]);
-
-  // FIX: Voice Recognition Logic
-  const toggleListening = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // 4. Smart Filtering Logic (The "Brain")
+  const results = useMemo(() => {
+    if (!debouncedSearch.trim()) return [];
     
+    const term = debouncedSearch.toLowerCase();
+    
+    return data
+      .map(item => {
+        // Scoring Algorithm
+        let score = 0;
+        const nameLower = item.name.toLowerCase();
+        const codeLower = item.code.toLowerCase();
+
+        if (codeLower === term) score += 100; // Exact Code Match (Highest)
+        else if (codeLower.startsWith(term)) score += 80; // Code Starts With
+        else if (nameLower === term) score += 60; // Exact Name
+        else if (nameLower.startsWith(term)) score += 50; // Name Starts With
+        else if (nameLower.includes(term)) score += 20; // Contains
+        else if (codeLower.includes(term)) score += 10; // Code Contains
+
+        return { ...item, score };
+      })
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score) // Sort by relevance
+      .slice(0, 50); // Performance limit
+  }, [debouncedSearch, data]);
+
+  // 5. Voice Logic
+  const toggleListening = () => {
+    vibrate(50);
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert("Browser Anda tidak mendukung fitur suara. Silakan gunakan Google Chrome.");
+      alert("Browser tidak support fitur suara.");
       return;
     }
 
@@ -105,205 +150,293 @@ const App = () => {
     const recognition = new SpeechRecognition();
     recognition.lang = 'id-ID';
     recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart = () => {
-      setIsListening(true);
-    };
-
+    
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      setSearchTerm(transcript.replace(/[.?!]/g, ''));
-      setIsListening(false);
+      const text = event.results[0][0].transcript.replace(/[.?!]/g, '');
+      setSearchTerm(text);
+      vibrate([50, 50, 50]); // Success vibration
     };
 
-    recognition.onerror = (event) => {
-      console.error("Speech Error:", event.error);
-      setIsListening(false);
-      if (event.error === 'not-allowed') {
-        alert("Izin mikrofon ditolak. Silakan aktifkan mikrofon di pengaturan browser Anda.");
-      }
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-
-    try {
-      recognition.start();
-    } catch (e) {
-      console.error(e);
-      setIsListening(false);
-    }
+    recognition.start();
   };
 
-  const ResultCard = ({ item, isHistory = false }) => {
+  // Actions
+  const handleSelect = (item) => {
+    vibrate(20);
+    // Cek duplikat di history
+    setHistory(prev => [item, ...prev.filter(h => h.id !== item.id)].slice(0, 20));
+    setSearchTerm(''); // Optional: clear after select
+  };
+
+  const toggleFavorite = (item, e) => {
+    e.stopPropagation();
+    vibrate(10);
+    const exists = favorites.find(f => f.id === item.id);
+    if (exists) setFavorites(prev => prev.filter(f => f.id !== item.id));
+    else setFavorites(prev => [item, ...prev]);
+  };
+
+  const clearHistory = () => {
+    if(window.confirm('Hapus semua riwayat?')) setHistory([]);
+  };
+
+  // --- SUB COMPONENTS ---
+
+  const ResultCard = ({ item, isHistory }) => {
     const isFav = favorites.some(f => f.id === item.id);
-    const parts = item.name.split(',').map(p => p.trim());
-    const mainLoc = parts[0];
-    const subLoc = parts.slice(1).join(', ');
+    const [city, ...districts] = item.name.split(',');
 
     return (
       <div 
-        onClick={() => {
-          if(!isHistory) {
-            setSearchTerm(''); // Clear search on select if needed
-            addToHistory(item);
+        onClick={() => handleSelect(item)}
+        className={`group relative overflow-hidden rounded-2xl border transition-all duration-300 mb-3 cursor-pointer
+          ${darkMode 
+            ? 'bg-slate-800/50 border-slate-700 hover:bg-slate-800' 
+            : 'bg-white border-slate-200 hover:border-blue-300 shadow-sm hover:shadow-lg'
           }
-        }}
-        className={`flex items-stretch rounded-2xl transition-all duration-200 shadow-sm hover:shadow-md border ${
-          darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'
-        } overflow-hidden cursor-pointer active:scale-95 mb-4`}
+        `}
       >
-        <div className="w-24 bg-blue-600 flex flex-col items-center justify-center p-2 shrink-0">
-          <span className="text-[10px] font-bold text-blue-100 opacity-70">SORTIR</span>
-          <h2 className="text-3xl font-black text-white">{item.sortCode}</h2>
-        </div>
-        <div className="flex-1 p-4 flex flex-col justify-center">
-          <div className="flex justify-between items-start">
-            <div>
-              <h3 className="font-bold text-lg leading-tight uppercase">{mainLoc}</h3>
-              {subLoc && (
-                <div className="flex items-center gap-1 mt-1 opacity-60">
-                  <MapPin size={12} />
-                  <p className="text-xs font-medium uppercase">{subLoc}</p>
-                </div>
-              )}
-            </div>
-            <button 
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleFavorite(item, e);
-              }}
-              className={`p-2 rounded-full ${isFav ? 'text-yellow-500 bg-yellow-400/10' : 'text-slate-300'}`}
-            >
-              <Star size={20} fill={isFav ? "currentColor" : "none"} />
-            </button>
+        <div className="flex h-full">
+          {/* Left: Sort Code (The Hero) */}
+          <div className={`w-24 flex flex-col items-center justify-center p-3 text-center shrink-0 transition-colors
+            ${darkMode ? 'bg-slate-700' : 'bg-slate-100 group-hover:bg-blue-600 group-hover:text-white'}
+          `}>
+            <span className="text-[10px] font-bold uppercase tracking-widest opacity-60">Sortir</span>
+            <span className="text-3xl font-black tracking-tighter">{item.sortCode}</span>
           </div>
-          <p className="text-[10px] mt-2 font-mono opacity-40 uppercase tracking-tighter">KODE JNE: {item.code}</p>
+
+          {/* Right: Details */}
+          <div className="flex-1 p-4 flex flex-col justify-center min-w-0">
+            <div className="flex justify-between items-start gap-2">
+              <div className="truncate">
+                <h3 className={`font-bold text-lg leading-tight truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                  <HighlightText text={city} highlight={debouncedSearch} />
+                </h3>
+                {districts.length > 0 && (
+                  <div className="flex items-center gap-1.5 mt-1 text-xs font-medium opacity-70 truncate">
+                    <MapPin size={12} />
+                    <HighlightText text={districts.join(', ')} highlight={debouncedSearch} />
+                  </div>
+                )}
+              </div>
+              <button 
+                onClick={(e) => toggleFavorite(item, e)}
+                className={`p-2 rounded-full transition-all active:scale-90 
+                  ${isFav ? 'text-yellow-400 bg-yellow-400/10' : 'text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
+              >
+                <Star size={18} fill={isFav ? "currentColor" : "none"} />
+              </button>
+            </div>
+            
+            <div className="mt-3 flex items-center justify-between">
+              <span className="text-[10px] font-mono bg-slate-200 dark:bg-slate-900 dark:text-slate-400 px-2 py-0.5 rounded text-slate-600 font-bold">
+                KODE: {item.code}
+              </span>
+              {isHistory && <span className="text-[10px] text-blue-500 font-bold flex items-center gap-1">TERAKHIR DILIHAT <History size={10}/></span>}
+            </div>
+          </div>
         </div>
       </div>
     );
   };
 
-  const addToHistory = (item) => {
-    setHistory(prev => [item, ...prev.filter(h => h.id !== item.id)].slice(0, 10));
-  };
-
-  const toggleFavorite = (item) => {
-    const isFav = favorites.some(f => f.id === item.id);
-    if (isFav) {
-      setFavorites(favorites.filter(f => f.id !== item.id));
-    } else {
-      setFavorites([item, ...favorites]);
-    }
-  };
+  // --- RENDER ---
 
   return (
-    <div className={`min-h-screen ${darkMode ? 'bg-slate-900' : 'bg-slate-50'} font-sans transition-colors duration-300`}>
-      <header className={`sticky top-0 z-50 backdrop-blur-md border-b ${darkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
-        <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-red-600 text-white p-1.5 rounded-lg shadow-lg">
-              <Package size={20} />
+    <div className={`min-h-screen font-sans transition-colors duration-300 selection:bg-blue-500 selection:text-white
+      ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}
+    `}>
+      
+      {/* HEADER */}
+      <header className={`sticky top-0 z-50 backdrop-blur-xl border-b transition-colors
+        ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-slate-200'}
+      `}>
+        <div className="max-w-xl mx-auto px-4 py-3">
+          {/* Top Bar */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="bg-gradient-to-tr from-red-600 to-orange-600 p-2 rounded-xl shadow-lg shadow-red-500/20">
+                <Package size={20} className="text-white" />
+              </div>
+              <div>
+                <h1 className="font-black text-sm tracking-tight leading-none">SMART SORTER</h1>
+                <p className="text-[10px] font-bold opacity-50 mt-0.5">JNE LOGISTICS v2.0</p>
+              </div>
             </div>
-            <div className="flex flex-col">
-              <h1 className={`font-black text-sm leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>JNE SMART SORTER</h1>
-              <span className={`text-[10px] font-bold opacity-50 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>v1.1 by Giraldi P.Y.</span>
-            </div>
-          </div>
-          <button onClick={() => setDarkMode(!darkMode)} className={`p-2 rounded-full ${darkMode ? 'bg-slate-800 text-yellow-400' : 'bg-slate-100 text-slate-600'}`}>
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
-        </div>
-
-        <div className="max-w-2xl mx-auto px-4 pb-4">
-          <div className={`relative flex items-center rounded-2xl shadow-inner border-2 transition-all ${
-            isListening ? 'border-red-500 ring-4 ring-red-500/20 bg-red-50/50' : darkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-slate-50'
-          }`}>
-            <Search className="ml-4 text-slate-400" size={20} />
-            <input
-              ref={searchInputRef}
-              type="text"
-              placeholder={isListening ? "Mendengarkan..." : loading ? "Memuat data..." : "Cari Kecamatan / Kota..."}
-              className={`w-full py-4 px-3 bg-transparent outline-none font-bold text-lg ${isListening ? 'placeholder-red-400' : ''}`}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              disabled={loading}
-            />
             <button 
-              onClick={toggleListening}
-              className={`mr-2 p-3 rounded-xl transition-all ${isListening ? 'bg-red-600 text-white scale-110 shadow-lg' : 'text-blue-600 hover:bg-blue-100'}`}
-              title="Cari dengan suara"
+              onClick={() => { vibrate(); setDarkMode(!darkMode); }} 
+              className={`p-2.5 rounded-full transition-transform active:scale-90
+                ${darkMode ? 'bg-slate-800 text-yellow-400' : 'bg-slate-100 text-slate-600'}
+              `}
             >
-              {isListening ? <Volume2 size={24} className="animate-pulse" /> : <Mic size={24} />}
+              {darkMode ? <Sun size={18} /> : <Moon size={18} />}
             </button>
           </div>
-          {isListening && (
-            <p className="text-[10px] text-red-500 font-bold text-center mt-2 animate-pulse uppercase tracking-widest">Sebutkan nama daerah sekarang...</p>
-          )}
+
+          {/* Search Bar */}
+          <div className={`relative group transition-all duration-300 ${isListening ? 'scale-105' : ''}`}>
+            <div className={`absolute -inset-0.5 rounded-2xl blur opacity-30 transition duration-500
+              ${isListening ? 'bg-red-500 opacity-70 animate-pulse' : 'bg-blue-500'}
+            `}></div>
+            <div className={`relative flex items-center rounded-2xl shadow-sm border overflow-hidden
+              ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}
+            `}>
+              <Search className={`ml-4 shrink-0 transition-colors ${isListening ? 'text-red-500' : 'text-slate-400'}`} size={20} />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder={isListening ? "Katakan sesuatu..." : "Cari Kecamatan / Kota / Kode..."}
+                className={`w-full py-3.5 px-3 bg-transparent outline-none font-bold text-lg placeholder:font-medium placeholder:text-slate-400
+                  ${darkMode ? 'text-white' : 'text-slate-900'}
+                `}
+                disabled={loading}
+              />
+              {searchTerm && (
+                <button 
+                  onClick={() => setSearchTerm('')} 
+                  className="p-2 text-slate-400 hover:text-red-500 transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              )}
+              <div className="w-px h-8 bg-slate-200 dark:bg-slate-700 mx-1"></div>
+              <button 
+                onClick={toggleListening}
+                className={`p-3 mr-1 rounded-xl transition-all active:scale-95
+                  ${isListening ? 'bg-red-50 text-red-600' : 'text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800'}
+                `}
+              >
+                {isListening ? <Volume2 size={22} className="animate-bounce" /> : <Mic size={22} />}
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 py-6">
-        {loading ? (
-          <div className="flex flex-col items-center justify-center py-20 opacity-40">
-            <Loader2 className="animate-spin mb-4" size={48} />
-            <p className="font-bold">MENGHUBUNGKAN DATABASE...</p>
+      {/* CONTENT */}
+      <main className="max-w-xl mx-auto px-4 py-6 pb-24">
+        {/* Loading State */}
+        {loading && (
+          <div className="flex flex-col items-center justify-center py-20 opacity-50 space-y-4 animate-pulse">
+            <Loader2 className="animate-spin text-blue-500" size={40} />
+            <p className="text-xs font-bold tracking-widest uppercase">Sinkronisasi Database...</p>
           </div>
-        ) : error ? (
-          <div className="bg-red-50 p-6 rounded-3xl text-red-600 text-center border-2 border-red-100">
-            <AlertCircle className="mx-auto mb-2" size={32} />
-            <p className="font-bold">{error}</p>
+        )}
+
+        {/* Error State */}
+        {!loading && error && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-6 rounded-2xl text-center">
+            <AlertCircle className="mx-auto mb-3 text-red-500" size={32} />
+            <p className="font-bold text-red-600 dark:text-red-400">{error}</p>
           </div>
-        ) : !searchTerm ? (
-          <div className="space-y-8">
-            {favorites.length > 0 && (
-              <section className="animate-in fade-in slide-in-from-bottom-2">
-                <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-4 px-1 flex items-center gap-2">
-                  <Star size={14} className="text-yellow-500 fill-yellow-500" /> Lokasi Favorit
-                </h3>
-                {favorites.map(item => <ResultCard key={`fav-${item.id}`} item={item} isHistory={true} />)}
-              </section>
-            )}
-            
-            <section className="animate-in fade-in slide-in-from-bottom-4">
-              <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-4 px-1 flex items-center gap-2">
-                <History size={14} /> Terakhir Dicari
-              </h3>
-              {history.length === 0 ? (
-                <div className="text-center py-12 border-2 border-dashed border-slate-200 rounded-3xl opacity-30">
-                  <Zap size={32} className="mx-auto mb-2" />
-                  <p className="text-sm font-bold uppercase tracking-tighter">Belum ada paket yang disortir</p>
+        )}
+
+        {/* Content State */}
+        {!loading && !error && (
+          <>
+            {/* Search Results */}
+            {searchTerm ? (
+              <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
+                <div className="flex justify-between items-end mb-4 px-1">
+                  <span className="text-[10px] font-black tracking-widest text-slate-400 uppercase">
+                    Hasil Pencarian ({results.length})
+                  </span>
                 </div>
-              ) : (
-                history.map(item => <ResultCard key={`hist-${item.id}`} item={item} isHistory={true} />)
-              )}
-            </section>
-          </div>
-        ) : (
-          <div className="animate-in fade-in duration-200">
-            <div className="flex justify-between items-center mb-4 px-1">
-                <p className="text-[10px] font-black text-slate-400 tracking-tighter uppercase">DITEMUKAN {results.length} LOKASI</p>
-                <button onClick={() => setSearchTerm('')} className="text-[10px] font-bold text-red-500 uppercase">Hapus</button>
-            </div>
-            {results.map(item => <ResultCard key={item.id} item={item} />)}
-            {results.length === 0 && (
-              <div className="text-center py-20 opacity-20">
-                <Package size={64} className="mx-auto mb-4" />
-                <p className="font-black text-xl uppercase">Lokasi Tidak Terdaftar</p>
+                
+                {results.length > 0 ? (
+                  results.map(item => <ResultCard key={item.id} item={item} />)
+                ) : (
+                  <div className="text-center py-16 opacity-40">
+                    <Package size={64} className="mx-auto mb-4 text-slate-300 dark:text-slate-600" />
+                    <p className="font-black text-lg">LOKASI TIDAK DITEMUKAN</p>
+                    <p className="text-sm">Coba kata kunci lain</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Dashboard View (History & Favs) */
+              <div className="space-y-8 animate-in fade-in duration-500">
+                
+                {/* Stats / Quick Toggles */}
+                <div className="grid grid-cols-2 gap-3 mb-6">
+                  <button 
+                    onClick={() => setActiveTab('history')}
+                    className={`p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all
+                      ${activeTab === 'history' 
+                        ? 'bg-blue-500 border-blue-600 text-white shadow-lg shadow-blue-500/30' 
+                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}
+                    `}
+                  >
+                    <History size={20} />
+                    <span className="text-xs font-bold uppercase">Riwayat</span>
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('favorites')}
+                    className={`p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all
+                      ${activeTab === 'favorites' 
+                        ? 'bg-yellow-500 border-yellow-600 text-white shadow-lg shadow-yellow-500/30' 
+                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}
+                    `}
+                  >
+                    <Star size={20} fill="currentColor" />
+                    <span className="text-xs font-bold uppercase">Favorit</span>
+                  </button>
+                </div>
+
+                {/* Section Content */}
+                <div>
+                  <div className="flex justify-between items-center mb-4 px-1">
+                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                      {activeTab === 'history' ? <History size={14}/> : <Star size={14}/>}
+                      {activeTab === 'history' ? 'Terakhir Dilihat' : 'Disimpan'}
+                    </h3>
+                    {activeTab === 'history' && history.length > 0 && (
+                      <button onClick={clearHistory} className="text-[10px] font-bold text-red-500 flex items-center gap-1 hover:underline">
+                        <Trash2 size={10} /> BERSIHKAN
+                      </button>
+                    )}
+                  </div>
+
+                  {activeTab === 'history' ? (
+                    history.length === 0 ? (
+                      <div className="text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-3xl opacity-40">
+                        <Zap size={32} className="mx-auto mb-2" />
+                        <p className="text-xs font-bold uppercase">Belum ada aktivitas</p>
+                      </div>
+                    ) : (
+                      history.map(item => <ResultCard key={`hist-${item.id}`} item={item} isHistory />)
+                    )
+                  ) : (
+                    favorites.length === 0 ? (
+                      <div className="text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-3xl opacity-40">
+                        <Star size={32} className="mx-auto mb-2" />
+                        <p className="text-xs font-bold uppercase">Belum ada favorit</p>
+                      </div>
+                    ) : (
+                      favorites.map(item => <ResultCard key={`fav-${item.id}`} item={item} />)
+                    )
+                  )}
+                </div>
               </div>
             )}
-          </div>
+          </>
         )}
       </main>
 
-      <footer className={`fixed bottom-0 left-0 right-0 p-3 text-center text-[10px] font-bold tracking-tighter transition-colors ${darkMode ? 'bg-slate-950 text-slate-600' : 'bg-white text-slate-400 border-t'}`}>
-        JNE SMART SORTER • SISTEM BANTU OUTBOUND
+      {/* FOOTER */}
+      <footer className={`fixed bottom-0 w-full border-t backdrop-blur-md p-4 flex justify-between items-center text-[10px] font-bold tracking-widest transition-colors z-40
+        ${darkMode ? 'bg-slate-950/80 border-slate-800 text-slate-500' : 'bg-white/80 border-slate-200 text-slate-400'}
+      `}>
+         <span>SMART SORTER SYSTEM</span>
+         <span className="opacity-50">PRO EDITION</span>
       </footer>
     </div>
   );
 };
 
 export default App;
-
