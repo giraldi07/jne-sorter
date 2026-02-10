@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  Search, Package, MapPin, Mic, MicOff, 
+  Search, Package, MapPin, Mic, 
   History, Star, Sun, Moon, Zap, Trash2,
-  AlertCircle, Loader2, Volume2, X, ScanBarcode, Camera, FlipHorizontal
+  AlertCircle, Loader2, X, ScanBarcode, Camera 
 } from 'lucide-react';
-import Tesseract from 'tesseract.js';
+import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
-// --- UTILS & HOOKS ---
+// --- CONFIG API ---
+const BINDERBYTE_KEY = '65066a3619137b92eeb5ef539dd6a309d7b7933e7374ceb3fb776e031c2c808a';
 
+// --- UTILS ---
 const useDebounce = (value, delay) => {
   const [debouncedValue, setDebouncedValue] = useState(value);
   useEffect(() => {
@@ -17,150 +19,66 @@ const useDebounce = (value, delay) => {
   return debouncedValue;
 };
 
-const HighlightText = ({ text, highlight }) => {
-  if (!highlight.trim()) return <span>{text}</span>;
-  const regex = new RegExp(`(${highlight})`, 'gi');
-  const parts = text.split(regex);
-  return (
-    <span>
-      {parts.map((part, i) => 
-        regex.test(part) ? <span key={i} className="bg-yellow-300 text-slate-900 px-0.5 rounded-sm">{part}</span> : part
-      )}
-    </span>
-  );
-};
-
-// --- COMPONENT: SMART OCR SCANNER ---
-// Menggunakan Tesseract.js untuk membaca teks alamat dari gambar kamera
-const SmartScanner = ({ onScanSuccess, onClose, darkMode }) => {
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [status, setStatus] = useState('Posisikan alamat di dalam kotak');
-
+// --- COMPONENT: BARCODE SCANNER ---
+const BarcodeScanner = ({ onScanSuccess, onClose }) => {
   useEffect(() => {
-    async function setupCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
-        });
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      } catch (err) {
-        setStatus("Gagal akses kamera. Periksa izin browser.");
-      }
-    }
-    setupCamera();
-    return () => {
-      if (videoRef.current?.srcObject) {
-        videoRef.current.srcObject.getTracks().forEach(track => track.stop());
-      }
+    const config = {
+      fps: 15,
+      qrbox: { width: 280, height: 150 },
+      aspectRatio: 1.0,
+      formatsToSupport: [ Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39 ]
     };
-  }, []);
 
-  const handleCapture = async () => {
-    if (isProcessing) return;
-    setIsProcessing(true);
-    setStatus("Sedang membaca teks resi...");
+    const scanner = new Html5QrcodeScanner("reader", config, false);
+    scanner.render((decodedText) => {
+      scanner.clear().then(() => onScanSuccess(decodedText));
+    }, () => {});
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-
-    // Ambil frame dari video
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
-
-    try {
-      // Proses OCR (Bahasa Indonesia)
-      const result = await Tesseract.recognize(
-        canvas.toDataURL('image/jpeg', 0.8),
-        'ind',
-        { logger: m => console.log(m.status + ": " + Math.round(m.progress * 100) + "%") }
-      );
-
-      const rawText = result.data.text;
-      onScanSuccess(rawText);
-    } catch (err) {
-      console.error(err);
-      setStatus("Gagal memproses gambar.");
-      setIsProcessing(false);
-    }
-  };
+    return () => { scanner.clear().catch(() => {}); };
+  }, [onScanSuccess]);
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-4">
-      <div className="relative w-full max-w-md aspect-[3/4] bg-slate-900 rounded-3xl overflow-hidden shadow-2xl border-2 border-white/20">
-        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-        <canvas ref={canvasRef} className="hidden" />
-        
-        {/* Overlay Bingkai Fokus */}
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <div className="w-64 h-40 border-2 border-blue-400 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]"></div>
-          <div className="mt-4 px-4 py-1 bg-blue-500 text-white text-[10px] font-bold rounded-full uppercase tracking-widest">
-            Area Alamat / Kode
-          </div>
+    <div className="fixed inset-0 z-[60] bg-black/95 flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl overflow-hidden shadow-2xl">
+        <div className="p-4 border-b dark:border-slate-800 flex justify-between items-center">
+          <h3 className="font-black text-xs uppercase tracking-widest flex items-center gap-2">
+            <ScanBarcode size={18} className="text-blue-500" /> Pindai Barcode Resi
+          </h3>
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+            <X size={20} />
+          </button>
         </div>
-
-        {/* Status Loading */}
-        {isProcessing && (
-          <div className="absolute inset-0 bg-slate-900/80 flex flex-col items-center justify-center text-white p-6 text-center">
-            <Loader2 className="animate-spin text-blue-500 mb-4" size={48} />
-            <p className="font-bold animate-pulse">{status}</p>
-          </div>
-        )}
-
-        {/* Close Button */}
-        <button onClick={onClose} className="absolute top-4 right-4 p-2 bg-black/50 text-white rounded-full">
-          <X size={24} />
-        </button>
-      </div>
-
-      <div className="mt-8 flex flex-col items-center gap-4 w-full max-w-md">
-        <p className="text-white/70 text-sm font-medium">{status}</p>
-        <button 
-          onClick={handleCapture}
-          disabled={isProcessing}
-          className="w-full py-4 bg-white text-slate-900 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-transform disabled:opacity-50"
-        >
-          AMBIL FOTO & SCAN
-        </button>
+        <div id="reader" className="w-full bg-black aspect-video"></div>
+        <div className="p-6 text-center">
+          <p className="text-sm font-bold text-slate-500 italic">Arahkan kamera ke garis-garis barcode resi JNE</p>
+        </div>
       </div>
     </div>
   );
 };
 
-// --- MAIN COMPONENT ---
-
+// --- MAIN APP ---
 const App = () => {
   const [data, setData] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [apiLoading, setApiLoading] = useState(false);
   const [error, setError] = useState('');
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
-  const [isListening, setIsListening] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
-  const [activeTab, setActiveTab] = useState('search'); 
-
+  
   const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('jne_history') || '[]'));
   const [favorites, setFavorites] = useState(() => JSON.parse(localStorage.getItem('jne_favorites') || '[]'));
 
-  const searchInputRef = useRef(null);
   const debouncedSearch = useDebounce(searchTerm, 300);
 
-  const vibrate = (pattern = 10) => {
-    if (navigator.vibrate) navigator.vibrate(pattern);
-  };
-
-  // 1. Load Database CSV
+  // 1. Load Database CSV (Sama seperti sebelumnya)
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
         const response = await fetch('/jne_destination_code.csv');
-        if (!response.ok) throw new Error('Database offline.');
         const text = await response.text();
-        
         const lines = text.split('\n');
         const parsed = [];
         const regex = /,(?=(?:(?:[^"]*"){2})*[^"]*$)/;
@@ -180,7 +98,7 @@ const App = () => {
         }
         setData(parsed);
       } catch (err) {
-        setError("Gagal memuat database sorting.");
+        setError("Database CSV gagal dimuat.");
       } finally {
         setLoading(false);
       }
@@ -198,193 +116,163 @@ const App = () => {
     localStorage.setItem('jne_favorites', JSON.stringify(favorites));
   }, [history, favorites]);
 
-  // 2. Logic Scanner Success
-  const handleScanSuccess = (rawText) => {
-    vibrate([50, 100]);
+  // 2. LOGIKA UTAMA: Ambil Data Resi dari Binderbyte
+  const handleAwbScanned = async (awb) => {
     setIsScanning(false);
+    setApiLoading(true);
+    if (navigator.vibrate) navigator.vibrate([50, 100]);
 
-    // LOGIKA PENCARIAN PINTAR:
-    // Kita pecah teks hasil OCR menjadi kata-kata, lalu cari kata yang ada di database
-    const words = rawText.toUpperCase().split(/[\s,.\n]+/).filter(w => w.length > 3);
-    
-    let bestMatch = "";
-    for (const word of words) {
-      const match = data.find(item => 
-        item.name.toUpperCase().includes(word) || 
-        item.code.toUpperCase() === word
-      );
-      if (match) {
-        bestMatch = word;
-        break;
+    try {
+      const response = await fetch(`https://api.binderbyte.com/v1/track?api_key=${BINDERBYTE_KEY}&courier=jne&awb=${awb}`);
+      const result = await response.json();
+
+      if (result.status === 200) {
+        // Ambil data destinasi (biasanya formatnya "KOTA, KECAMATAN")
+        const dest = result.data.detail.destination.toUpperCase();
+        console.log("Destinasi API:", dest);
+
+        // Cari di database CSV yang paling cocok
+        findMatchingSortCode(dest, awb);
+      } else {
+        alert("Resi tidak ditemukan atau limit API habis: " + result.message);
+        setSearchTerm(awb);
       }
-    }
-
-    if (bestMatch) {
-      setSearchTerm(bestMatch);
-    } else {
-      // Jika tidak ada yang cocok, ambil baris terakhir (biasanya lokasi di resi ada di bawah)
-      const lines = rawText.split('\n').filter(l => l.trim().length > 0);
-      setSearchTerm(lines[lines.length - 1] || "");
-      alert("Alamat terdeteksi, silakan sesuaikan jika kurang tepat.");
+    } catch (err) {
+      alert("Gagal koneksi ke server Binderbyte.");
+    } finally {
+      setApiLoading(false);
     }
   };
 
-  // 3. Smart Filtering
+  const findMatchingSortCode = (destinationStr, originalAwb) => {
+    // Strategi pencarian: Pecah kata "KOTA KECAMATAN" dan cari kecocokan di CSV
+    const parts = destinationStr.split(/[\s,]+/).filter(p => p.length > 2);
+    
+    let match = null;
+    // Cek kecocokan kata per kata
+    for (const part of parts) {
+      match = data.find(item => item.name.toUpperCase().includes(part));
+      if (match) break;
+    }
+
+    if (match) {
+      setSearchTerm(match.name);
+      // Simpan ke history otomatis
+      setHistory(prev => [match, ...prev.filter(h => h.id !== match.id)].slice(0, 20));
+      if (navigator.vibrate) navigator.vibrate(200);
+    } else {
+      setSearchTerm(destinationStr);
+      alert("Alamat dapat, tapi kode sortir tidak ditemukan di CSV.");
+    }
+  };
+
   const results = useMemo(() => {
     if (!debouncedSearch.trim()) return [];
     const term = debouncedSearch.toLowerCase();
-    
     return data
-      .map(item => {
-        let score = 0;
-        const nameLower = item.name.toLowerCase();
-        const codeLower = item.code.toLowerCase();
-
-        if (codeLower === term) score += 100;
-        else if (nameLower.includes(term)) score += 50; 
-        else if (codeLower.includes(term)) score += 20; 
-
-        return { ...item, score };
-      })
-      .filter(item => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 30); 
+      .filter(item => item.name.toLowerCase().includes(term) || item.code.toLowerCase().includes(term))
+      .slice(0, 20);
   }, [debouncedSearch, data]);
 
-  const toggleListening = () => {
-    vibrate(50);
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return alert("Browser tidak support.");
-    if (isListening) return setIsListening(false);
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'id-ID';
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
-    recognition.onresult = (event) => {
-      setSearchTerm(event.results[0][0].transcript.replace(/[.?!]/g, ''));
-    };
-    recognition.start();
-  };
-
-  const handleSelect = (item) => {
-    vibrate(20);
-    setHistory(prev => [item, ...prev.filter(h => h.id !== item.id)].slice(0, 20));
-  };
-
-  const ResultCard = ({ item, isHistory }) => {
+  const ResultCard = ({ item }) => {
     const isFav = favorites.some(f => f.id === item.id);
-    const [city, ...districts] = item.name.split(',');
-
     return (
-      <div 
-        onClick={() => handleSelect(item)}
-        className={`group relative overflow-hidden rounded-2xl border transition-all duration-300 mb-3 cursor-pointer
-          ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-slate-200 shadow-sm'}
-        `}
-      >
-        <div className="flex h-full">
-          <div className={`w-20 flex flex-col items-center justify-center p-2 text-center shrink-0 
-            ${darkMode ? 'bg-slate-700 text-blue-400' : 'bg-blue-600 text-white'}
-          `}>
-            <span className="text-[9px] font-bold uppercase tracking-tighter opacity-80">SORT</span>
-            <span className="text-2xl font-black">{item.sortCode}</span>
-          </div>
-          <div className="flex-1 p-4 min-w-0">
-            <div className="flex justify-between items-start gap-2">
-              <div className="truncate">
-                <h3 className="font-bold text-base leading-tight truncate">
-                  <HighlightText text={city} highlight={debouncedSearch} />
-                </h3>
-                <p className="text-xs opacity-60 truncate mt-1 flex items-center gap-1">
-                  <MapPin size={10} /> {districts.join(', ') || 'Area Utama'}
-                </p>
-              </div>
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setFavorites(prev => prev.find(f => f.id === item.id) ? prev.filter(f => f.id !== item.id) : [...prev, item]);
-                }}
-                className={`p-2 rounded-full ${isFav ? 'text-yellow-400' : 'text-slate-300'}`}
-              >
-                <Star size={18} fill={isFav ? "currentColor" : "none"} />
-              </button>
-            </div>
-          </div>
+      <div className={`p-4 mb-3 rounded-2xl border flex items-center gap-4 animate-in fade-in slide-in-from-right-4 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
+        <div className="w-16 h-16 rounded-xl bg-blue-600 flex flex-col items-center justify-center text-white shrink-0">
+          <span className="text-[8px] font-black opacity-70">SORT</span>
+          <span className="text-xl font-black leading-none">{item.sortCode}</span>
         </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="font-bold text-sm truncate uppercase">{item.name}</h3>
+          <p className="text-[10px] font-mono text-slate-500 mt-1 uppercase tracking-wider">KODE: {item.code}</p>
+        </div>
+        <button 
+          onClick={() => setFavorites(prev => isFav ? prev.filter(f => f.id !== item.id) : [...prev, item])}
+          className={`p-2 rounded-full ${isFav ? 'text-yellow-400 bg-yellow-400/10' : 'text-slate-300'}`}
+        >
+          <Star size={18} fill={isFav ? "currentColor" : "none"} />
+        </button>
       </div>
     );
   };
 
   return (
-    <div className={`min-h-screen font-sans transition-colors duration-300 ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+    <div className={`min-h-screen transition-colors ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
       
-      {isScanning && <SmartScanner onScanSuccess={handleScanSuccess} onClose={() => setIsScanning(false)} darkMode={darkMode} />}
+      {isScanning && <BarcodeScanner onScanSuccess={handleAwbScanned} onClose={() => setIsScanning(false)} />}
 
-      <header className={`sticky top-0 z-50 backdrop-blur-xl border-b ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-slate-200'}`}>
-        <div className="max-w-xl mx-auto px-4 py-4">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <div className="bg-red-600 p-2 rounded-xl shadow-lg shadow-red-500/20 text-white">
-                <Package size={20} />
-              </div>
-              <h1 className="font-black text-lg tracking-tighter">SCANNER<span className="text-red-600">SORT</span></h1>
-            </div>
-            <button onClick={() => setDarkMode(!darkMode)} className="p-2.5 rounded-full bg-slate-100 dark:bg-slate-800">
-              {darkMode ? <Sun size={18} className="text-yellow-400" /> : <Moon size={18} />}
-            </button>
+      <header className={`sticky top-0 z-50 backdrop-blur-md border-b p-4 ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-slate-200'}`}>
+        <div className="max-w-xl mx-auto flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Package className="text-blue-500" />
+            <span className="font-black tracking-tighter">API-SORT v3</span>
           </div>
+          <button onClick={() => setDarkMode(!darkMode)} className="p-2 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-yellow-400">
+            {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+        </div>
 
-          <div className="relative flex items-center gap-2">
-            <div className={`flex-1 flex items-center rounded-2xl border ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'} p-1`}>
-              <button onClick={() => setIsScanning(true)} className="p-3 text-blue-500 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-xl transition-colors">
-                <Camera size={24} />
-              </button>
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Scan resi atau ketik alamat..."
-                className="w-full py-3 px-2 bg-transparent outline-none font-bold text-base"
-              />
-              {searchTerm && <button onClick={() => setSearchTerm('')} className="p-2 opacity-40"><X size={18}/></button>}
-              <button onClick={toggleListening} className={`p-3 rounded-xl ${isListening ? 'text-red-500 animate-pulse' : 'text-slate-400'}`}>
-                {isListening ? <Volume2 size={22}/> : <Mic size={22}/>}
-              </button>
-            </div>
+        <div className="max-w-xl mx-auto flex gap-2">
+          <div className="flex-1 flex items-center bg-white dark:bg-slate-900 border dark:border-slate-700 rounded-2xl px-3 shadow-sm focus-within:ring-2 ring-blue-500 transition-all">
+            <Search className="text-slate-400" size={18} />
+            <input 
+              type="text" 
+              value={searchTerm} 
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Ketik alamat atau pindai..." 
+              className="w-full py-3 px-3 bg-transparent outline-none font-bold text-sm"
+            />
+            {searchTerm && <button onClick={() => setSearchTerm('')}><X size={16} className="text-slate-400" /></button>}
           </div>
+          <button 
+            onClick={() => setIsScanning(true)}
+            className="p-4 bg-blue-600 text-white rounded-2xl shadow-lg shadow-blue-500/30 active:scale-95 transition-all"
+          >
+            <Camera size={20} />
+          </button>
         </div>
       </header>
 
-      <main className="max-w-xl mx-auto px-4 py-6 pb-24">
-        {loading ? (
-          <div className="flex flex-col items-center py-20 opacity-40"><Loader2 className="animate-spin mb-2" /> <p className="text-xs font-bold uppercase tracking-widest">Memuat Data...</p></div>
-        ) : (
+      <main className="max-w-xl mx-auto p-4 pb-20">
+        {apiLoading && (
+          <div className="flex flex-col items-center py-20 text-blue-500 animate-pulse">
+            <Loader2 className="animate-spin mb-4" size={40} />
+            <p className="font-black text-xs tracking-[0.3em] uppercase">Tracking Binderbyte...</p>
+          </div>
+        )}
+
+        {!apiLoading && (
           <>
             {searchTerm ? (
-              <div className="animate-in fade-in slide-in-from-bottom-4">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Hasil Pencarian ({results.length})</p>
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4">Hasil Pencarian</p>
                 {results.map(item => <ResultCard key={item.id} item={item} />)}
-                {results.length === 0 && <div className="text-center py-20 opacity-30"><Search size={48} className="mx-auto mb-2" /><p className="font-bold">Tidak ditemukan</p></div>}
               </div>
             ) : (
-              <div className="space-y-6">
-                <div className="grid grid-cols-2 gap-3">
-                  <button onClick={() => setActiveTab('history')} className={`p-4 rounded-2xl border flex flex-col items-center gap-1 font-bold text-xs uppercase ${activeTab === 'history' ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-slate-900'}`}><History size={18}/> Riwayat</button>
-                  <button onClick={() => setActiveTab('favorites')} className={`p-4 rounded-2xl border flex flex-col items-center gap-1 font-bold text-xs uppercase ${activeTab === 'favorites' ? 'bg-yellow-500 border-yellow-500 text-white' : 'bg-white dark:bg-slate-900'}`}><Star size={18}/> Favorit</button>
-                </div>
-                <div>
-                  <h3 className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">{activeTab === 'history' ? 'Terakhir Dilihat' : 'Disimpan'}</h3>
-                  {(activeTab === 'history' ? history : favorites).map(item => <ResultCard key={item.id} item={item} isHistory={activeTab === 'history'} />)}
-                </div>
+              <div className="space-y-8 mt-4">
+                {history.length > 0 && (
+                  <div>
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><History size={14}/> Riwayat Sortir</h3>
+                      <button onClick={() => setHistory([])} className="text-[10px] font-bold text-red-500 hover:underline">HAPUS</button>
+                    </div>
+                    {history.map(item => <ResultCard key={`h-${item.id}`} item={item} />)}
+                  </div>
+                )}
+                {favorites.length > 0 && (
+                  <div>
+                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-4"><Star size={14}/> Favorit</h3>
+                    {favorites.map(item => <ResultCard key={`f-${item.id}`} item={item} />)}
+                  </div>
+                )}
               </div>
             )}
           </>
         )}
       </main>
 
-      <footer className={`fixed bottom-0 w-full p-4 text-center text-[10px] font-black tracking-[0.2em] border-t backdrop-blur-md ${darkMode ? 'bg-slate-950/80 border-slate-800 text-slate-500' : 'bg-white/80 text-slate-400'}`}>
-        INTERNAL SORTING SYSTEM V2.5
+      <footer className="fixed bottom-0 w-full p-4 text-[9px] font-black text-center opacity-30 tracking-[0.3em]">
+        POWERED BY BINDERBYTE & JNE CSV
       </footer>
     </div>
   );
