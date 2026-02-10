@@ -2,9 +2,9 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Search, Package, MapPin, Mic, MicOff, 
   History, Star, Sun, Moon, Zap, Trash2,
-  AlertCircle, Loader2, Volume2, X, ScanBarcode, Camera 
+  AlertCircle, Loader2, Volume2, X, ScanBarcode, Camera, FlipHorizontal
 } from 'lucide-react';
-import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import Tesseract from 'tesseract.js';
 
 // --- UTILS & HOOKS ---
 
@@ -30,58 +30,101 @@ const HighlightText = ({ text, highlight }) => {
   );
 };
 
-// --- COMPONENT: SCANNER MODAL ---
-const BarcodeScanner = ({ onScanSuccess, onClose }) => {
+// --- COMPONENT: SMART OCR SCANNER ---
+// Menggunakan Tesseract.js untuk membaca teks alamat dari gambar kamera
+const SmartScanner = ({ onScanSuccess, onClose, darkMode }) => {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [status, setStatus] = useState('Posisikan alamat di dalam kotak');
+
   useEffect(() => {
-    // Config Scanner agar support Barcode 1D (Resi) dan QR
-    const config = {
-      fps: 10,
-      qrbox: { width: 250, height: 150 }, // Kotak scan persegi panjang (cocok utk resi)
-      aspectRatio: 1.0,
-      formatsToSupport: [ 
-        Html5QrcodeSupportedFormats.CODE_128, // Format umum resi JNE/Logistik
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.QR_CODE 
-      ]
-    };
-
-    const scanner = new Html5QrcodeScanner("reader", config, false);
-
-    scanner.render((decodedText) => {
-      // Bersihkan scanner setelah sukses
-      scanner.clear().then(() => {
-        onScanSuccess(decodedText);
-      }).catch(error => {
-        console.error("Failed to clear scanner", error);
-      });
-    }, (error) => {
-      // Handle error scanning (biasanya diabaikan karena scanning terjadi terus menerus)
-    });
-
-    // Cleanup saat component unmount (tutup modal)
+    async function setupCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+        });
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      } catch (err) {
+        setStatus("Gagal akses kamera. Periksa izin browser.");
+      }
+    }
+    setupCamera();
     return () => {
-      scanner.clear().catch(error => console.error("Failed to clear scanner on unmount", error));
+      if (videoRef.current?.srcObject) {
+        videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+      }
     };
-  }, [onScanSuccess]);
+  }, []);
+
+  const handleCapture = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setStatus("Sedang membaca teks resi...");
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+
+    // Ambil frame dari video
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+
+    try {
+      // Proses OCR (Bahasa Indonesia)
+      const result = await Tesseract.recognize(
+        canvas.toDataURL('image/jpeg', 0.8),
+        'ind',
+        { logger: m => console.log(m.status + ": " + Math.round(m.progress * 100) + "%") }
+      );
+
+      const rawText = result.data.text;
+      onScanSuccess(rawText);
+    } catch (err) {
+      console.error(err);
+      setStatus("Gagal memproses gambar.");
+      setIsProcessing(false);
+    }
+  };
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/90 flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white rounded-2xl overflow-hidden relative">
-        <div className="p-4 bg-slate-900 text-white flex justify-between items-center">
-          <h3 className="font-bold flex items-center gap-2">
-            <ScanBarcode /> PINDAI RESI / KODE
-          </h3>
-          <button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full">
-            <X size={20} />
-          </button>
-        </div>
+    <div className="fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center p-4">
+      <div className="relative w-full max-w-md aspect-[3/4] bg-slate-900 rounded-3xl overflow-hidden shadow-2xl border-2 border-white/20">
+        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+        <canvas ref={canvasRef} className="hidden" />
         
-        {/* Area Kamera */}
-        <div id="reader" className="w-full bg-black min-h-[300px]"></div>
-
-        <div className="p-4 text-center bg-slate-50 text-slate-600 text-xs font-bold">
-          Arahkan kamera ke Barcode Paket
+        {/* Overlay Bingkai Fokus */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <div className="w-64 h-40 border-2 border-blue-400 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]"></div>
+          <div className="mt-4 px-4 py-1 bg-blue-500 text-white text-[10px] font-bold rounded-full uppercase tracking-widest">
+            Area Alamat / Kode
+          </div>
         </div>
+
+        {/* Status Loading */}
+        {isProcessing && (
+          <div className="absolute inset-0 bg-slate-900/80 flex flex-col items-center justify-center text-white p-6 text-center">
+            <Loader2 className="animate-spin text-blue-500 mb-4" size={48} />
+            <p className="font-bold animate-pulse">{status}</p>
+          </div>
+        )}
+
+        {/* Close Button */}
+        <button onClick={onClose} className="absolute top-4 right-4 p-2 bg-black/50 text-white rounded-full">
+          <X size={24} />
+        </button>
+      </div>
+
+      <div className="mt-8 flex flex-col items-center gap-4 w-full max-w-md">
+        <p className="text-white/70 text-sm font-medium">{status}</p>
+        <button 
+          onClick={handleCapture}
+          disabled={isProcessing}
+          className="w-full py-4 bg-white text-slate-900 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-transform disabled:opacity-50"
+        >
+          AMBIL FOTO & SCAN
+        </button>
       </div>
     </div>
   );
@@ -90,14 +133,13 @@ const BarcodeScanner = ({ onScanSuccess, onClose }) => {
 // --- MAIN COMPONENT ---
 
 const App = () => {
-  // State
   const [data, setData] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
   const [isListening, setIsListening] = useState(false);
-  const [isScanning, setIsScanning] = useState(false); // State untuk modal scanner
+  const [isScanning, setIsScanning] = useState(false);
   const [activeTab, setActiveTab] = useState('search'); 
 
   const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('jne_history') || '[]'));
@@ -110,7 +152,7 @@ const App = () => {
     if (navigator.vibrate) navigator.vibrate(pattern);
   };
 
-  // 1. Load Data
+  // 1. Load Database CSV
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -156,21 +198,41 @@ const App = () => {
     localStorage.setItem('jne_favorites', JSON.stringify(favorites));
   }, [history, favorites]);
 
-  // 2. Logic Scanner
-  const handleScanSuccess = (decodedText) => {
-    vibrate([50, 50, 100]); // Getar 2x tanda sukses
-    setIsScanning(false); // Tutup modal
-    setSearchTerm(decodedText); // Masukkan hasil scan ke search
+  // 2. Logic Scanner Success
+  const handleScanSuccess = (rawText) => {
+    vibrate([50, 100]);
+    setIsScanning(false);
+
+    // LOGIKA PENCARIAN PINTAR:
+    // Kita pecah teks hasil OCR menjadi kata-kata, lalu cari kata yang ada di database
+    const words = rawText.toUpperCase().split(/[\s,.\n]+/).filter(w => w.length > 3);
     
-    // Auto Select logic (Opsional: jika hasil scan COCOK PERSIS dengan Kode, langsung simpan ke history)
-    // Tapi lebih aman biarkan user melihat hasilnya dulu di list.
+    let bestMatch = "";
+    for (const word of words) {
+      const match = data.find(item => 
+        item.name.toUpperCase().includes(word) || 
+        item.code.toUpperCase() === word
+      );
+      if (match) {
+        bestMatch = word;
+        break;
+      }
+    }
+
+    if (bestMatch) {
+      setSearchTerm(bestMatch);
+    } else {
+      // Jika tidak ada yang cocok, ambil baris terakhir (biasanya lokasi di resi ada di bawah)
+      const lines = rawText.split('\n').filter(l => l.trim().length > 0);
+      setSearchTerm(lines[lines.length - 1] || "");
+      alert("Alamat terdeteksi, silakan sesuaikan jika kurang tepat.");
+    }
   };
 
   // 3. Smart Filtering
   const results = useMemo(() => {
     if (!debouncedSearch.trim()) return [];
-    
-    const term = debouncedSearch.toLowerCase().replace(/[^a-z0-9 ]/g, ""); // Bersihkan simbol aneh dari barcode
+    const term = debouncedSearch.toLowerCase();
     
     return data
       .map(item => {
@@ -179,65 +241,35 @@ const App = () => {
         const codeLower = item.code.toLowerCase();
 
         if (codeLower === term) score += 100;
-        else if (codeLower.startsWith(term)) score += 80; 
-        else if (nameLower === term) score += 60;
-        else if (nameLower.startsWith(term)) score += 50; 
-        else if (nameLower.includes(term)) score += 20; 
-        else if (codeLower.includes(term)) score += 10; 
+        else if (nameLower.includes(term)) score += 50; 
+        else if (codeLower.includes(term)) score += 20; 
 
         return { ...item, score };
       })
       .filter(item => item.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, 50); 
+      .slice(0, 30); 
   }, [debouncedSearch, data]);
 
-  // 4. Voice Logic
   const toggleListening = () => {
     vibrate(50);
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Browser tidak support fitur suara.");
-      return;
-    }
-
-    if (isListening) {
-      setIsListening(false);
-      return;
-    }
+    if (!SpeechRecognition) return alert("Browser tidak support.");
+    if (isListening) return setIsListening(false);
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'id-ID';
-    recognition.interimResults = false;
-    
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
-    
     recognition.onresult = (event) => {
-      const text = event.results[0][0].transcript.replace(/[.?!]/g, '');
-      setSearchTerm(text);
-      vibrate([50, 50, 50]);
+      setSearchTerm(event.results[0][0].transcript.replace(/[.?!]/g, ''));
     };
-
     recognition.start();
   };
 
   const handleSelect = (item) => {
     vibrate(20);
     setHistory(prev => [item, ...prev.filter(h => h.id !== item.id)].slice(0, 20));
-    // setSearchTerm(''); // Keep search term active to show result
-  };
-
-  const toggleFavorite = (item, e) => {
-    e.stopPropagation();
-    vibrate(10);
-    const exists = favorites.find(f => f.id === item.id);
-    if (exists) setFavorites(prev => prev.filter(f => f.id !== item.id));
-    else setFavorites(prev => [item, ...prev]);
-  };
-
-  const clearHistory = () => {
-    if(window.confirm('Hapus semua riwayat?')) setHistory([]);
   };
 
   const ResultCard = ({ item, isHistory }) => {
@@ -248,47 +280,35 @@ const App = () => {
       <div 
         onClick={() => handleSelect(item)}
         className={`group relative overflow-hidden rounded-2xl border transition-all duration-300 mb-3 cursor-pointer
-          ${darkMode 
-            ? 'bg-slate-800/50 border-slate-700 hover:bg-slate-800' 
-            : 'bg-white border-slate-200 hover:border-blue-300 shadow-sm hover:shadow-lg'
-          }
+          ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-slate-200 shadow-sm'}
         `}
       >
         <div className="flex h-full">
-          <div className={`w-24 flex flex-col items-center justify-center p-3 text-center shrink-0 transition-colors
-            ${darkMode ? 'bg-slate-700' : 'bg-slate-100 group-hover:bg-blue-600 group-hover:text-white'}
+          <div className={`w-20 flex flex-col items-center justify-center p-2 text-center shrink-0 
+            ${darkMode ? 'bg-slate-700 text-blue-400' : 'bg-blue-600 text-white'}
           `}>
-            <span className="text-[10px] font-bold uppercase tracking-widest opacity-60">Sortir</span>
-            <span className="text-3xl font-black tracking-tighter">{item.sortCode}</span>
+            <span className="text-[9px] font-bold uppercase tracking-tighter opacity-80">SORT</span>
+            <span className="text-2xl font-black">{item.sortCode}</span>
           </div>
-
-          <div className="flex-1 p-4 flex flex-col justify-center min-w-0">
+          <div className="flex-1 p-4 min-w-0">
             <div className="flex justify-between items-start gap-2">
               <div className="truncate">
-                <h3 className={`font-bold text-lg leading-tight truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                <h3 className="font-bold text-base leading-tight truncate">
                   <HighlightText text={city} highlight={debouncedSearch} />
                 </h3>
-                {districts.length > 0 && (
-                  <div className="flex items-center gap-1.5 mt-1 text-xs font-medium opacity-70 truncate">
-                    <MapPin size={12} />
-                    <HighlightText text={districts.join(', ')} highlight={debouncedSearch} />
-                  </div>
-                )}
+                <p className="text-xs opacity-60 truncate mt-1 flex items-center gap-1">
+                  <MapPin size={10} /> {districts.join(', ') || 'Area Utama'}
+                </p>
               </div>
               <button 
-                onClick={(e) => toggleFavorite(item, e)}
-                className={`p-2 rounded-full transition-all active:scale-90 
-                  ${isFav ? 'text-yellow-400 bg-yellow-400/10' : 'text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFavorites(prev => prev.find(f => f.id === item.id) ? prev.filter(f => f.id !== item.id) : [...prev, item]);
+                }}
+                className={`p-2 rounded-full ${isFav ? 'text-yellow-400' : 'text-slate-300'}`}
               >
                 <Star size={18} fill={isFav ? "currentColor" : "none"} />
               </button>
-            </div>
-            
-            <div className="mt-3 flex items-center justify-between">
-              <span className="text-[10px] font-mono bg-slate-200 dark:bg-slate-900 dark:text-slate-400 px-2 py-0.5 rounded text-slate-600 font-bold">
-                KODE: {item.code}
-              </span>
-              {isHistory && <span className="text-[10px] text-blue-500 font-bold flex items-center gap-1">TERAKHIR DILIHAT <History size={10}/></span>}
             </div>
           </div>
         </div>
@@ -297,187 +317,65 @@ const App = () => {
   };
 
   return (
-    <div className={`min-h-screen font-sans transition-colors duration-300
-      ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}
-    `}>
+    <div className={`min-h-screen font-sans transition-colors duration-300 ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
       
-      {/* SCANNER MODAL */}
-      {isScanning && (
-        <BarcodeScanner 
-          onScanSuccess={handleScanSuccess} 
-          onClose={() => setIsScanning(false)} 
-        />
-      )}
+      {isScanning && <SmartScanner onScanSuccess={handleScanSuccess} onClose={() => setIsScanning(false)} darkMode={darkMode} />}
 
-      {/* HEADER */}
-      <header className={`sticky top-0 z-50 backdrop-blur-xl border-b transition-colors
-        ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-slate-200'}
-      `}>
-        <div className="max-w-xl mx-auto px-4 py-3">
+      <header className={`sticky top-0 z-50 backdrop-blur-xl border-b ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-slate-200'}`}>
+        <div className="max-w-xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
-              <div className="bg-gradient-to-tr from-red-600 to-orange-600 p-2 rounded-xl shadow-lg shadow-red-500/20">
-                <Package size={20} className="text-white" />
+              <div className="bg-red-600 p-2 rounded-xl shadow-lg shadow-red-500/20 text-white">
+                <Package size={20} />
               </div>
-              <div>
-                <h1 className="font-black text-sm tracking-tight leading-none">SMART SORTER</h1>
-                <p className="text-[10px] font-bold opacity-50 mt-0.5">SCAN & SORT v2.1</p>
-              </div>
+              <h1 className="font-black text-lg tracking-tighter">SCANNER<span className="text-red-600">SORT</span></h1>
             </div>
-            <button 
-              onClick={() => { vibrate(); setDarkMode(!darkMode); }} 
-              className={`p-2.5 rounded-full transition-transform active:scale-90
-                ${darkMode ? 'bg-slate-800 text-yellow-400' : 'bg-slate-100 text-slate-600'}
-              `}
-            >
-              {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+            <button onClick={() => setDarkMode(!darkMode)} className="p-2.5 rounded-full bg-slate-100 dark:bg-slate-800">
+              {darkMode ? <Sun size={18} className="text-yellow-400" /> : <Moon size={18} />}
             </button>
           </div>
 
-          <div className={`relative group transition-all duration-300 ${isListening ? 'scale-105' : ''}`}>
-            <div className={`absolute -inset-0.5 rounded-2xl blur opacity-30 transition duration-500
-              ${isListening ? 'bg-red-500 opacity-70 animate-pulse' : 'bg-blue-500'}
-            `}></div>
-            <div className={`relative flex items-center rounded-2xl shadow-sm border overflow-hidden
-              ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}
-            `}>
-              {/* Tombol Scan Camera */}
-              <button 
-                onClick={() => setIsScanning(true)}
-                className="pl-3 pr-2 py-4 text-slate-400 hover:text-blue-500 transition-colors border-r border-slate-100 dark:border-slate-800"
-              >
+          <div className="relative flex items-center gap-2">
+            <div className={`flex-1 flex items-center rounded-2xl border ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'} p-1`}>
+              <button onClick={() => setIsScanning(true)} className="p-3 text-blue-500 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-xl transition-colors">
                 <Camera size={24} />
               </button>
-
               <input
-                ref={searchInputRef}
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder={isListening ? "Katakan sesuatu..." : "Scan Resi / Ketik..."}
-                className={`w-full py-3.5 px-3 bg-transparent outline-none font-bold text-lg placeholder:font-medium placeholder:text-slate-400
-                  ${darkMode ? 'text-white' : 'text-slate-900'}
-                `}
-                disabled={loading}
+                placeholder="Scan resi atau ketik alamat..."
+                className="w-full py-3 px-2 bg-transparent outline-none font-bold text-base"
               />
-              {searchTerm && (
-                <button 
-                  onClick={() => setSearchTerm('')} 
-                  className="p-2 text-slate-400 hover:text-red-500 transition-colors"
-                >
-                  <X size={18} />
-                </button>
-              )}
-              <button 
-                onClick={toggleListening}
-                className={`p-3 mr-1 rounded-xl transition-all active:scale-95
-                  ${isListening ? 'bg-red-50 text-red-600' : 'text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800'}
-                `}
-              >
-                {isListening ? <Volume2 size={22} className="animate-bounce" /> : <Mic size={22} />}
+              {searchTerm && <button onClick={() => setSearchTerm('')} className="p-2 opacity-40"><X size={18}/></button>}
+              <button onClick={toggleListening} className={`p-3 rounded-xl ${isListening ? 'text-red-500 animate-pulse' : 'text-slate-400'}`}>
+                {isListening ? <Volume2 size={22}/> : <Mic size={22}/>}
               </button>
             </div>
           </div>
         </div>
       </header>
 
-      {/* CONTENT */}
       <main className="max-w-xl mx-auto px-4 py-6 pb-24">
-        {loading && (
-          <div className="flex flex-col items-center justify-center py-20 opacity-50 space-y-4 animate-pulse">
-            <Loader2 className="animate-spin text-blue-500" size={40} />
-            <p className="text-xs font-bold tracking-widest uppercase">Sinkronisasi Database...</p>
-          </div>
-        )}
-
-        {!loading && error && (
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-6 rounded-2xl text-center">
-            <AlertCircle className="mx-auto mb-3 text-red-500" size={32} />
-            <p className="font-bold text-red-600 dark:text-red-400">{error}</p>
-          </div>
-        )}
-
-        {!loading && !error && (
+        {loading ? (
+          <div className="flex flex-col items-center py-20 opacity-40"><Loader2 className="animate-spin mb-2" /> <p className="text-xs font-bold uppercase tracking-widest">Memuat Data...</p></div>
+        ) : (
           <>
             {searchTerm ? (
-              <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
-                <div className="flex justify-between items-end mb-4 px-1">
-                  <span className="text-[10px] font-black tracking-widest text-slate-400 uppercase">
-                    Hasil Pencarian ({results.length})
-                  </span>
-                </div>
-                
-                {results.length > 0 ? (
-                  results.map(item => <ResultCard key={item.id} item={item} />)
-                ) : (
-                  <div className="text-center py-16 opacity-40">
-                    <ScanBarcode size={64} className="mx-auto mb-4 text-slate-300 dark:text-slate-600" />
-                    <p className="font-black text-lg">TIDAK DITEMUKAN</p>
-                    <p className="text-sm px-10">
-                      Jika hasil scan adalah nomor Resi (angka), pastikan database memiliki data resi, atau scan Barcode Kode Tujuan.
-                    </p>
-                  </div>
-                )}
+              <div className="animate-in fade-in slide-in-from-bottom-4">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Hasil Pencarian ({results.length})</p>
+                {results.map(item => <ResultCard key={item.id} item={item} />)}
+                {results.length === 0 && <div className="text-center py-20 opacity-30"><Search size={48} className="mx-auto mb-2" /><p className="font-bold">Tidak ditemukan</p></div>}
               </div>
             ) : (
-              <div className="space-y-8 animate-in fade-in duration-500">
-                <div className="grid grid-cols-2 gap-3 mb-6">
-                  <button 
-                    onClick={() => setActiveTab('history')}
-                    className={`p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all
-                      ${activeTab === 'history' 
-                        ? 'bg-blue-500 border-blue-600 text-white shadow-lg shadow-blue-500/30' 
-                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}
-                    `}
-                  >
-                    <History size={20} />
-                    <span className="text-xs font-bold uppercase">Riwayat</span>
-                  </button>
-                  <button 
-                    onClick={() => setActiveTab('favorites')}
-                    className={`p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all
-                      ${activeTab === 'favorites' 
-                        ? 'bg-yellow-500 border-yellow-600 text-white shadow-lg shadow-yellow-500/30' 
-                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}
-                    `}
-                  >
-                    <Star size={20} fill="currentColor" />
-                    <span className="text-xs font-bold uppercase">Favorit</span>
-                  </button>
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-3">
+                  <button onClick={() => setActiveTab('history')} className={`p-4 rounded-2xl border flex flex-col items-center gap-1 font-bold text-xs uppercase ${activeTab === 'history' ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-slate-900'}`}><History size={18}/> Riwayat</button>
+                  <button onClick={() => setActiveTab('favorites')} className={`p-4 rounded-2xl border flex flex-col items-center gap-1 font-bold text-xs uppercase ${activeTab === 'favorites' ? 'bg-yellow-500 border-yellow-500 text-white' : 'bg-white dark:bg-slate-900'}`}><Star size={18}/> Favorit</button>
                 </div>
-
                 <div>
-                  <div className="flex justify-between items-center mb-4 px-1">
-                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
-                      {activeTab === 'history' ? <History size={14}/> : <Star size={14}/>}
-                      {activeTab === 'history' ? 'Terakhir Dilihat' : 'Disimpan'}
-                    </h3>
-                    {activeTab === 'history' && history.length > 0 && (
-                      <button onClick={clearHistory} className="text-[10px] font-bold text-red-500 flex items-center gap-1 hover:underline">
-                        <Trash2 size={10} /> BERSIHKAN
-                      </button>
-                    )}
-                  </div>
-
-                  {activeTab === 'history' ? (
-                    history.length === 0 ? (
-                      <div className="text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-3xl opacity-40">
-                        <Zap size={32} className="mx-auto mb-2" />
-                        <p className="text-xs font-bold uppercase">Belum ada aktivitas</p>
-                      </div>
-                    ) : (
-                      history.map(item => <ResultCard key={`hist-${item.id}`} item={item} isHistory />)
-                    )
-                  ) : (
-                    favorites.length === 0 ? (
-                      <div className="text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-3xl opacity-40">
-                        <Star size={32} className="mx-auto mb-2" />
-                        <p className="text-xs font-bold uppercase">Belum ada favorit</p>
-                      </div>
-                    ) : (
-                      favorites.map(item => <ResultCard key={`fav-${item.id}`} item={item} />)
-                    )
-                  )}
+                  <h3 className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">{activeTab === 'history' ? 'Terakhir Dilihat' : 'Disimpan'}</h3>
+                  {(activeTab === 'history' ? history : favorites).map(item => <ResultCard key={item.id} item={item} isHistory={activeTab === 'history'} />)}
                 </div>
               </div>
             )}
@@ -485,11 +383,8 @@ const App = () => {
         )}
       </main>
 
-      <footer className={`fixed bottom-0 w-full border-t backdrop-blur-md p-4 flex justify-between items-center text-[10px] font-bold tracking-widest transition-colors z-40
-        ${darkMode ? 'bg-slate-950/80 border-slate-800 text-slate-500' : 'bg-white/80 border-slate-200 text-slate-400'}
-      `}>
-         <span>SMART SORTER SYSTEM</span>
-         <span className="opacity-50">SCANNER ENABLED</span>
+      <footer className={`fixed bottom-0 w-full p-4 text-center text-[10px] font-black tracking-[0.2em] border-t backdrop-blur-md ${darkMode ? 'bg-slate-950/80 border-slate-800 text-slate-500' : 'bg-white/80 text-slate-400'}`}>
+        INTERNAL SORTING SYSTEM V2.5
       </footer>
     </div>
   );
