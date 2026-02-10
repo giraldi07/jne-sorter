@@ -1,281 +1,312 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  Search, Package, MapPin, Mic, 
-  History, Star, Sun, Moon, Zap, Trash2,
-  AlertCircle, Loader2, X, ScanBarcode, Camera 
+  Search, Package, MapPin, Mic, History, Star, Sun, Moon, 
+  Trash2, AlertCircle, Loader2, Volume2, X, ScanBarcode, 
+  Camera, User, Send, ArrowRight, ClipboardList, Info, Zap
 } from 'lucide-react';
 import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 // --- CONFIG API ---
 const BINDERBYTE_KEY = '65066a3619137b92eeb5ef539dd6a309d7b7933e7374ceb3fb776e031c2c808a';
 
-// --- UTILS ---
-const useDebounce = (value, delay) => {
-  const [debouncedValue, setDebouncedValue] = useState(value);
-  useEffect(() => {
-    const handler = setTimeout(() => setDebouncedValue(value), delay);
-    return () => clearTimeout(handler);
-  }, [value, delay]);
-  return debouncedValue;
-};
-
-// --- COMPONENT: BARCODE SCANNER ---
-const BarcodeScanner = ({ onScanSuccess, onClose }) => {
-  useEffect(() => {
-    const config = {
-      fps: 15,
-      qrbox: { width: 280, height: 150 },
-      aspectRatio: 1.0,
-      formatsToSupport: [ Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39 ]
-    };
-
-    const scanner = new Html5QrcodeScanner("reader", config, false);
-    scanner.render((decodedText) => {
-      scanner.clear().then(() => onScanSuccess(decodedText));
-    }, () => {});
-
-    return () => { scanner.clear().catch(() => {}); };
-  }, [onScanSuccess]);
-
-  return (
-    <div className="fixed inset-0 z-[60] bg-black/95 flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl overflow-hidden shadow-2xl">
-        <div className="p-4 border-b dark:border-slate-800 flex justify-between items-center">
-          <h3 className="font-black text-xs uppercase tracking-widest flex items-center gap-2">
-            <ScanBarcode size={18} className="text-blue-500" /> Pindai Barcode Resi
-          </h3>
-          <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
-            <X size={20} />
-          </button>
-        </div>
-        <div id="reader" className="w-full bg-black aspect-video"></div>
-        <div className="p-6 text-center">
-          <p className="text-sm font-bold text-slate-500 italic">Arahkan kamera ke garis-garis barcode resi JNE</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// --- MAIN APP ---
 const App = () => {
+  // --- STATES ---
   const [data, setData] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [apiLoading, setApiLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
   const [isScanning, setIsScanning] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
+  const [activeTab, setActiveTab] = useState('search'); 
   
-  const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('jne_history') || '[]'));
-  const [favorites, setFavorites] = useState(() => JSON.parse(localStorage.getItem('jne_favorites') || '[]'));
+  const [scanDetail, setScanDetail] = useState(null);
+  const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('ss_history') || '[]'));
+  const [pinned, setPinned] = useState(() => JSON.parse(localStorage.getItem('ss_pinned') || '[]'));
 
-  const debouncedSearch = useDebounce(searchTerm, 300);
+  // --- LOGIC: TTS (SUARA ROBOT) ---
+  const speak = (text) => {
+    if ('speechSynthesis' in window) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'id-ID';
+      utterance.rate = 1.1;
+      window.speechSynthesis.speak(utterance);
+    }
+  };
 
-  // 1. Load Database CSV (Sama seperti sebelumnya)
+  // --- LOGIC: DATABASE LOAD ---
   useEffect(() => {
-    const loadData = async () => {
+    const loadCSV = async () => {
       try {
-        setLoading(true);
         const response = await fetch('/jne_destination_code.csv');
         const text = await response.text();
-        const lines = text.split('\n');
-        const parsed = [];
-        const regex = /,(?=(?:(?:[^"]*"){2})*[^"]*$)/;
-
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-          const cols = line.split(regex).map(c => c.replace(/^"|"$/g, '').trim());
-          if (cols.length >= 3) {
-            parsed.push({
-              id: `${cols[0]}-${cols[1]}`, 
-              code: cols[1],
-              sortCode: cols[1]?.substring(0, 3).toUpperCase() || 'UNK',
-              name: cols[2],
-            });
-          }
-        }
+        const lines = text.split('\n').slice(1);
+        const parsed = lines.map(line => {
+          const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim());
+          if (cols.length < 3) return null;
+          return { 
+            id: `${cols[0]}-${cols[1]}`, 
+            code: cols[1], 
+            name: cols[2], 
+            sortCode: cols[1]?.substring(0, 3).toUpperCase() || 'UNK' 
+          };
+        }).filter(Boolean);
         setData(parsed);
-      } catch (err) {
-        setError("Database CSV gagal dimuat.");
-      } finally {
-        setLoading(false);
-      }
+      } catch (err) { console.error("CSV Load Error"); }
+      finally { setLoading(false); }
     };
-    loadData();
+    loadCSV();
   }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
     localStorage.setItem('theme', darkMode ? 'dark' : 'light');
-  }, [darkMode]);
+    localStorage.setItem('ss_history', JSON.stringify(history));
+    localStorage.setItem('ss_pinned', JSON.stringify(pinned));
+  }, [darkMode, history, pinned]);
 
-  useEffect(() => {
-    localStorage.setItem('jne_history', JSON.stringify(history));
-    localStorage.setItem('jne_favorites', JSON.stringify(favorites));
-  }, [history, favorites]);
+  // --- LOGIC: SMART SEARCH (MODE 1 & 2) ---
+  const smartFilteredResults = useMemo(() => {
+    if (!searchTerm.trim()) return [];
+    const keywords = searchTerm.toLowerCase().split(/[\s,]+/).filter(k => k.length > 1);
+    
+    return data.filter(item => {
+      const target = `${item.name} ${item.code}`.toLowerCase();
+      return keywords.every(key => target.includes(key));
+    }).slice(0, 15);
+  }, [searchTerm, data]);
 
-  // 2. LOGIKA UTAMA: Ambil Data Resi dari Binderbyte
+  // --- LOGIC: SCANNER & API ---
   const handleAwbScanned = async (awb) => {
     setIsScanning(false);
     setApiLoading(true);
-    if (navigator.vibrate) navigator.vibrate([50, 100]);
+    setScanDetail(null);
 
     try {
-      const response = await fetch(`https://api.binderbyte.com/v1/track?api_key=${BINDERBYTE_KEY}&courier=jne&awb=${awb}`);
-      const result = await response.json();
+      const res = await fetch(`https://api.binderbyte.com/v1/track?api_key=${BINDERBYTE_KEY}&courier=jne&awb=${awb}`);
+      const result = await res.json();
 
       if (result.status === 200) {
-        // Ambil data destinasi (biasanya formatnya "KOTA, KECAMATAN")
-        const dest = result.data.detail.destination.toUpperCase();
-        console.log("Destinasi API:", dest);
+        const info = result.data;
+        const detail = {
+          awb: info.summary.awb,
+          sender: info.detail.shipper,
+          receiver: info.detail.receiver,
+          destination: info.detail.destination.toUpperCase()
+        };
+        setScanDetail(detail);
+        
+        // Cari kode sortir dari destinasi
+        const destKeywords = detail.destination.split(/[\s,]+/).filter(k => k.length > 3);
+        let foundMatch = null;
+        for (const word of destKeywords) {
+          foundMatch = data.find(item => item.name.toUpperCase().includes(word));
+          if (foundMatch) break;
+        }
 
-        // Cari di database CSV yang paling cocok
-        findMatchingSortCode(dest, awb);
+        if (foundMatch) {
+          setSearchTerm(foundMatch.name);
+          speak(`Tujuan ${foundMatch.name}, Kode Sortir ${foundMatch.sortCode}`);
+          setHistory(prev => [foundMatch, ...prev.filter(h => h.id !== foundMatch.id)].slice(0, 20));
+        } else {
+          setSearchTerm(detail.destination);
+          speak(`Alamat ditemukan, tapi kode sortir tidak ada.`);
+        }
       } else {
-        alert("Resi tidak ditemukan atau limit API habis: " + result.message);
-        setSearchTerm(awb);
+        alert("Resi tidak ditemukan!");
       }
-    } catch (err) {
-      alert("Gagal koneksi ke server Binderbyte.");
-    } finally {
-      setApiLoading(false);
-    }
+    } catch (e) { alert("Error API Binderbyte"); }
+    finally { setApiLoading(false); }
   };
 
-  const findMatchingSortCode = (destinationStr, originalAwb) => {
-    // Strategi pencarian: Pecah kata "KOTA KECAMATAN" dan cari kecocokan di CSV
-    const parts = destinationStr.split(/[\s,]+/).filter(p => p.length > 2);
-    
-    let match = null;
-    // Cek kecocokan kata per kata
-    for (const part of parts) {
-      match = data.find(item => item.name.toUpperCase().includes(part));
-      if (match) break;
-    }
-
-    if (match) {
-      setSearchTerm(match.name);
-      // Simpan ke history otomatis
-      setHistory(prev => [match, ...prev.filter(h => h.id !== match.id)].slice(0, 20));
-      if (navigator.vibrate) navigator.vibrate(200);
-    } else {
-      setSearchTerm(destinationStr);
-      alert("Alamat dapat, tapi kode sortir tidak ditemukan di CSV.");
-    }
+  // --- LOGIC: VOICE (MODE 2) ---
+  const startVoiceSearch = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'id-ID';
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onresult = (e) => {
+        const text = e.results[0][0].transcript;
+        setSearchTerm(text);
+        speak(`Mencari ${text}`);
+    };
+    recognition.start();
   };
 
-  const results = useMemo(() => {
-    if (!debouncedSearch.trim()) return [];
-    const term = debouncedSearch.toLowerCase();
-    return data
-      .filter(item => item.name.toLowerCase().includes(term) || item.code.toLowerCase().includes(term))
-      .slice(0, 20);
-  }, [debouncedSearch, data]);
-
-  const ResultCard = ({ item }) => {
-    const isFav = favorites.some(f => f.id === item.id);
-    return (
-      <div className={`p-4 mb-3 rounded-2xl border flex items-center gap-4 animate-in fade-in slide-in-from-right-4 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-        <div className="w-16 h-16 rounded-xl bg-blue-600 flex flex-col items-center justify-center text-white shrink-0">
-          <span className="text-[8px] font-black opacity-70">SORT</span>
-          <span className="text-xl font-black leading-none">{item.sortCode}</span>
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="font-bold text-sm truncate uppercase">{item.name}</h3>
-          <p className="text-[10px] font-mono text-slate-500 mt-1 uppercase tracking-wider">KODE: {item.code}</p>
-        </div>
-        <button 
-          onClick={() => setFavorites(prev => isFav ? prev.filter(f => f.id !== item.id) : [...prev, item])}
-          className={`p-2 rounded-full ${isFav ? 'text-yellow-400 bg-yellow-400/10' : 'text-slate-300'}`}
-        >
-          <Star size={18} fill={isFav ? "currentColor" : "none"} />
-        </button>
+  const SortCard = ({ item, isPinned }) => (
+    <div 
+      onClick={() => {
+        setHistory(prev => [item, ...prev.filter(h => h.id !== item.id)].slice(0, 20));
+        speak(item.sortCode);
+      }}
+      className={`p-4 mb-3 rounded-2xl border flex items-center gap-4 transition-all active:scale-95 cursor-pointer
+      ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}
+    >
+      <div className={`w-14 h-14 rounded-xl flex flex-col items-center justify-center text-white font-black shrink-0
+        ${isPinned ? 'bg-orange-500' : 'bg-blue-600'}`}>
+        <span className="text-[7px] opacity-70">SORT</span>
+        <span className="text-xl">{item.sortCode}</span>
       </div>
-    );
-  };
+      <div className="flex-1 min-w-0">
+        <h3 className="font-bold text-sm uppercase truncate">{item.name}</h3>
+        <p className="text-[10px] opacity-50 font-mono tracking-tighter uppercase">{item.code}</p>
+      </div>
+      <button 
+        onClick={(e) => {
+          e.stopPropagation();
+          setPinned(prev => isPinned ? prev.filter(p => p.id !== item.id) : [...prev, item]);
+        }}
+        className={`p-2 rounded-lg ${isPinned ? 'text-orange-500 bg-orange-100 dark:bg-orange-500/10' : 'text-slate-300'}`}
+      >
+        <Star size={20} fill={isPinned ? "currentColor" : "none"} />
+      </button>
+    </div>
+  );
 
   return (
-    <div className={`min-h-screen transition-colors ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+    <div className={`min-h-screen pb-24 transition-colors font-sans ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
       
-      {isScanning && <BarcodeScanner onScanSuccess={handleAwbScanned} onClose={() => setIsScanning(false)} />}
-
-      <header className={`sticky top-0 z-50 backdrop-blur-md border-b p-4 ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-slate-200'}`}>
-        <div className="max-w-xl mx-auto flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <Package className="text-blue-500" />
-            <span className="font-black tracking-tighter">API-SORT v3</span>
-          </div>
-          <button onClick={() => setDarkMode(!darkMode)} className="p-2 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-yellow-400">
-            {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
+      {/* SCANNER MODAL */}
+      {isScanning && (
+        <div className="fixed inset-0 z-[100] bg-black p-4 flex flex-col">
+            <div className="flex justify-between items-center mb-4 px-2">
+                <h2 className="text-white font-black flex items-center gap-2"><ScanBarcode size={20} /> SCANNER ACTIVE</h2>
+                <button onClick={() => setIsScanning(false)} className="bg-white/10 p-2 rounded-full text-white"><X /></button>
+            </div>
+            <div className="flex-1 rounded-3xl overflow-hidden border-2 border-white/20">
+                <ScannerContainer onScanSuccess={handleAwbScanned} />
+            </div>
         </div>
+      )}
 
-        <div className="max-w-xl mx-auto flex gap-2">
-          <div className="flex-1 flex items-center bg-white dark:bg-slate-900 border dark:border-slate-700 rounded-2xl px-3 shadow-sm focus-within:ring-2 ring-blue-500 transition-all">
-            <Search className="text-slate-400" size={18} />
+      {/* HEADER */}
+      <header className={`sticky top-0 z-50 p-4 border-b backdrop-blur-xl ${darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-white/80 border-slate-200'}`}>
+        <div className="max-w-xl mx-auto space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
+                <Zap size={18} fill="currentColor" />
+              </div>
+              <h1 className="font-black text-lg tracking-tighter">SONIC<span className="text-blue-600">SORT</span></h1>
+            </div>
+            <button onClick={() => setDarkMode(!darkMode)} className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800">
+              {darkMode ? <Sun size={18} className="text-yellow-400" /> : <Moon size={18} />}
+            </button>
+          </div>
+
+          <div className={`flex items-center rounded-2xl border transition-all duration-300 focus-within:ring-2 ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
+            <button onClick={() => setIsScanning(true)} className="p-3.5 text-blue-500"><Camera size={22}/></button>
             <input 
               type="text" 
-              value={searchTerm} 
+              value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Ketik alamat atau pindai..." 
-              className="w-full py-3 px-3 bg-transparent outline-none font-bold text-sm"
+              placeholder="Cari Kota, Resi, atau Kode..."
+              className="w-full bg-transparent border-none outline-none font-bold text-sm"
             />
-            {searchTerm && <button onClick={() => setSearchTerm('')}><X size={16} className="text-slate-400" /></button>}
+            {searchTerm && <button onClick={() => setSearchTerm('')} className="p-2 opacity-40"><X size={16}/></button>}
+            <button onClick={startVoiceSearch} className={`p-3 ${isListening ? 'text-red-500 animate-pulse' : 'text-slate-400'}`}>
+              {isListening ? <Volume2 size={22}/> : <Mic size={22}/>}
+            </button>
           </div>
-          <button 
-            onClick={() => setIsScanning(true)}
-            className="p-4 bg-blue-600 text-white rounded-2xl shadow-lg shadow-blue-500/30 active:scale-95 transition-all"
-          >
-            <Camera size={20} />
-          </button>
         </div>
       </header>
 
-      <main className="max-w-xl mx-auto p-4 pb-20">
+      {/* CONTENT */}
+      <main className="max-w-xl mx-auto p-4">
+        
+        {/* API LOADING */}
         {apiLoading && (
-          <div className="flex flex-col items-center py-20 text-blue-500 animate-pulse">
-            <Loader2 className="animate-spin mb-4" size={40} />
-            <p className="font-black text-xs tracking-[0.3em] uppercase">Tracking Binderbyte...</p>
+            <div className="p-10 flex flex-col items-center gap-3 text-blue-500">
+                <Loader2 className="animate-spin" size={32} />
+                <p className="text-[10px] font-black tracking-[0.3em]">FETCHING DATA...</p>
+            </div>
+        )}
+
+        {/* SCAN RESULT PANEL */}
+        {scanDetail && !apiLoading && (
+          <div className="mb-6 p-5 bg-gradient-to-br from-indigo-600 to-blue-700 rounded-3xl text-white shadow-xl animate-in zoom-in-95">
+            <div className="flex justify-between items-center mb-4">
+              <span className="bg-white/20 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase">AWB: {scanDetail.awb}</span>
+              <button onClick={() => setScanDetail(null)}><X size={16}/></button>
+            </div>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <p className="text-[8px] font-bold opacity-60 uppercase mb-1">Pengirim</p>
+                <p className="font-bold text-xs truncate">{scanDetail.sender}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[8px] font-bold opacity-60 uppercase mb-1">Penerima</p>
+                <p className="font-bold text-xs truncate">{scanDetail.receiver}</p>
+              </div>
+            </div>
+            <div className="pt-3 border-t border-white/10">
+              <p className="text-[8px] font-bold opacity-60 uppercase mb-1">Alamat Tujuan</p>
+              <p className="text-sm font-black italic uppercase leading-tight">{scanDetail.destination}</p>
+            </div>
           </div>
         )}
 
-        {!apiLoading && (
-          <>
-            {searchTerm ? (
+        {/* SEARCH RESULTS */}
+        {searchTerm ? (
+          <div className="animate-in fade-in slide-in-from-bottom-4">
+            <h3 className="text-[10px] font-black opacity-40 uppercase tracking-widest mb-4 flex items-center gap-2"><ArrowRight size={12}/> Hasil Pencarian Pintar</h3>
+            {smartFilteredResults.map(item => <SortCard key={item.id} item={item} isPinned={pinned.some(p => p.id === item.id)} />)}
+          </div>
+        ) : (
+          <div className="space-y-8">
+            {/* PINNED AREA */}
+            {pinned.length > 0 && (
               <div>
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4">Hasil Pencarian</p>
-                {results.map(item => <ResultCard key={item.id} item={item} />)}
-              </div>
-            ) : (
-              <div className="space-y-8 mt-4">
-                {history.length > 0 && (
-                  <div>
-                    <div className="flex justify-between items-center mb-4">
-                      <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><History size={14}/> Riwayat Sortir</h3>
-                      <button onClick={() => setHistory([])} className="text-[10px] font-bold text-red-500 hover:underline">HAPUS</button>
-                    </div>
-                    {history.map(item => <ResultCard key={`h-${item.id}`} item={item} />)}
-                  </div>
-                )}
-                {favorites.length > 0 && (
-                  <div>
-                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-4"><Star size={14}/> Favorit</h3>
-                    {favorites.map(item => <ResultCard key={`f-${item.id}`} item={item} />)}
-                  </div>
-                )}
+                <h3 className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-4 flex items-center gap-2"><Star size={12} fill="currentColor"/> Memory Hub (Pinned)</h3>
+                {pinned.map(item => <SortCard key={`p-${item.id}`} item={item} isPinned={true} />)}
               </div>
             )}
-          </>
+
+            {/* HISTORY AREA */}
+            <div>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-[10px] font-black opacity-40 uppercase tracking-widest flex items-center gap-2"><History size={12}/> Riwayat Sortir</h3>
+                {history.length > 0 && <button onClick={() => setHistory([])} className="text-red-500 font-bold text-[10px]">CLEAR</button>}
+              </div>
+              {history.length === 0 ? (
+                <div className="py-20 text-center opacity-20"><Package size={48} className="mx-auto mb-2" /><p className="font-bold text-xs">Belum ada paket disortir</p></div>
+              ) : (
+                history.map(item => <SortCard key={`h-${item.id}`} item={item} isPinned={pinned.some(p => p.id === item.id)} />)
+              )}
+            </div>
+          </div>
         )}
       </main>
 
-      <footer className="fixed bottom-0 w-full p-4 text-[9px] font-black text-center opacity-30 tracking-[0.3em]">
-        POWERED BY BINDERBYTE & JNE CSV
+      {/* FOOTER NAV */}
+      <footer className={`fixed bottom-0 w-full p-4 border-t backdrop-blur-xl flex justify-around items-center transition-colors ${darkMode ? 'bg-slate-950/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
+        <button onClick={() => { setActiveTab('search'); setSearchTerm(''); }} className={`flex flex-col items-center gap-1 ${activeTab === 'search' ? 'text-blue-500' : 'text-slate-400'}`}>
+            <Search size={22} /> <span className="text-[8px] font-black uppercase">Home</span>
+        </button>
+        <button onClick={() => setIsScanning(true)} className="w-14 h-14 -mt-12 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-xl shadow-blue-500/40 border-4 border-slate-50 dark:border-slate-950 active:scale-90 transition-transform">
+            <ScanBarcode size={24} />
+        </button>
+        <button onClick={() => setActiveTab('pinned')} className={`flex flex-col items-center gap-1 ${activeTab === 'pinned' ? 'text-orange-500' : 'text-slate-400'}`}>
+            <ClipboardList size={22} /> <span className="text-[8px] font-black uppercase">List</span>
+        </button>
       </footer>
     </div>
   );
+};
+
+// --- HELPER COMPONENT: SCANNER ---
+const ScannerContainer = ({ onScanSuccess }) => {
+    useEffect(() => {
+        const scanner = new Html5QrcodeScanner("reader", { 
+            fps: 15, qrbox: { width: 280, height: 160 },
+            formatsToSupport: [ Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39 ]
+        }, false);
+        scanner.render(onScanSuccess, (err) => {});
+        return () => scanner.clear().catch(() => {});
+    }, [onScanSuccess]);
+    return <div id="reader" className="w-full bg-black"></div>;
 };
 
 export default App;
