@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Search, Package, MapPin, Mic, History, Star, Sun, Moon, 
   Trash2, AlertCircle, Loader2, Volume2, X, ScanBarcode, 
-  Camera, User, Send, ArrowRight, ClipboardList, Info, Zap
+  Camera, User, Send, ArrowRight, ClipboardList, Info, Zap,
+  Truck, Box, Calendar, CheckCircle2
 } from 'lucide-react';
 import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
@@ -65,7 +66,7 @@ const App = () => {
     localStorage.setItem('ss_pinned', JSON.stringify(pinned));
   }, [darkMode, history, pinned]);
 
-  // --- LOGIC: SMART SEARCH (MODE 1 & 2) ---
+  // --- LOGIC: SMART SEARCH (LOCAL FILTER) ---
   const smartFilteredResults = useMemo(() => {
     if (!searchTerm.trim()) return [];
     const keywords = searchTerm.toLowerCase().split(/[\s,]+/).filter(k => k.length > 1);
@@ -76,11 +77,11 @@ const App = () => {
     }).slice(0, 15);
   }, [searchTerm, data]);
 
-  // --- LOGIC: SCANNER & API ---
-  const handleAwbScanned = async (awb) => {
-    setIsScanning(false);
+  // --- LOGIC: PROCESS TRACKING (CORE LOGIC) ---
+  const processTracking = async (awb) => {
     setApiLoading(true);
     setScanDetail(null);
+    setIsScanning(false); // Close scanner if open
 
     try {
       const res = await fetch(`https://api.binderbyte.com/v1/track?api_key=${BINDERBYTE_KEY}&courier=jne&awb=${awb}`);
@@ -88,15 +89,21 @@ const App = () => {
 
       if (result.status === 200) {
         const info = result.data;
+        // Construct Detail Object
         const detail = {
           awb: info.summary.awb,
+          courier: info.summary.courier,
+          status: info.summary.status,
+          date: info.summary.date,
           sender: info.detail.shipper,
           receiver: info.detail.receiver,
-          destination: info.detail.destination.toUpperCase()
+          origin: info.detail.origin,
+          destination: info.detail.destination.toUpperCase(),
+          history: info.history || [] // Capture history if available
         };
         setScanDetail(detail);
         
-        // Cari kode sortir dari destinasi
+        // --- AUTO MATCHING SORT CODE ---
         const destKeywords = detail.destination.split(/[\s,]+/).filter(k => k.length > 3);
         let foundMatch = null;
         for (const word of destKeywords) {
@@ -105,21 +112,49 @@ const App = () => {
         }
 
         if (foundMatch) {
-          setSearchTerm(foundMatch.name);
-          speak(`Tujuan ${foundMatch.name}, Kode Sortir ${foundMatch.sortCode}`);
+          speak(`Paket ditemukan. Tujuan ${foundMatch.name}, Kode Sortir ${foundMatch.sortCode}`);
+          // Add to local history (Sort Code)
           setHistory(prev => [foundMatch, ...prev.filter(h => h.id !== foundMatch.id)].slice(0, 20));
         } else {
-          setSearchTerm(detail.destination);
-          speak(`Alamat ditemukan, tapi kode sortir tidak ada.`);
+          speak(`Data resi ditemukan. Status ${detail.status}`);
         }
       } else {
-        alert("Resi tidak ditemukan!");
+        alert("Resi tidak ditemukan atau kurir salah!");
       }
-    } catch (e) { alert("Error API Binderbyte"); }
-    finally { setApiLoading(false); }
+    } catch (e) { 
+        console.error(e);
+        alert("Gagal menghubungi server pelacakan."); 
+    } finally { 
+        setApiLoading(false); 
+    }
   };
 
-  // --- LOGIC: VOICE (MODE 2) ---
+  // --- LOGIC: HANDLE MANUAL SEARCH INPUT ---
+  const handleManualSearch = () => {
+    if (!searchTerm) return;
+
+    // Jika input terlihat seperti resi (angka/huruf panjang > 8 dan tidak ada spasi banyak)
+    const isLikelyResi = /^[A-Z0-9]{8,}$/i.test(searchTerm.trim()) && !searchTerm.includes(' ');
+
+    if (isLikelyResi) {
+        processTracking(searchTerm.trim());
+    } else {
+        // Jika bukan resi, biarkan filter lokal bekerja, tapi user mungkin ingin trigger sesuatu
+        speak("Mencari data wilayah " + searchTerm);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+        handleManualSearch();
+    }
+  };
+
+  // --- LOGIC: SCANNER & VOICE ---
+  const handleAwbScanned = (awb) => {
+    processTracking(awb);
+  };
+
   const startVoiceSearch = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
@@ -130,7 +165,13 @@ const App = () => {
     recognition.onresult = (e) => {
         const text = e.results[0][0].transcript;
         setSearchTerm(text);
-        speak(`Mencari ${text}`);
+        // Otomatis cek jika itu resi setelah suara
+        const isResi = /^[0-9]+$/.test(text.replace(/\s/g, ''));
+        if(isResi) {
+             processTracking(text.replace(/\s/g, ''));
+        } else {
+             speak(`Mencari ${text}`);
+        }
     };
     recognition.start();
   };
@@ -197,15 +238,25 @@ const App = () => {
           </div>
 
           <div className={`flex items-center rounded-2xl border transition-all duration-300 focus-within:ring-2 ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-            <button onClick={() => setIsScanning(true)} className="p-3.5 text-blue-500"><Camera size={22}/></button>
+            <button onClick={() => setIsScanning(true)} className="p-3.5 text-blue-500 hover:scale-110 transition-transform"><Camera size={22}/></button>
             <input 
               type="text" 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Cari Kota, Resi, atau Kode..."
+              onKeyDown={handleKeyDown}
+              placeholder="Cari Kota / Tempel No. Resi..."
               className="w-full bg-transparent border-none outline-none font-bold text-sm"
             />
-            {searchTerm && <button onClick={() => setSearchTerm('')} className="p-2 opacity-40"><X size={16}/></button>}
+            {searchTerm && <button onClick={() => setSearchTerm('')} className="p-2 opacity-40 hover:opacity-100"><X size={16}/></button>}
+            
+            {/* Tombol Search Manual (Baru) */}
+            <button 
+                onClick={handleManualSearch} 
+                className="p-3 text-blue-600 border-l border-slate-200 dark:border-slate-800"
+            >
+                <Search size={22} />
+            </button>
+
             <button onClick={startVoiceSearch} className={`p-3 ${isListening ? 'text-red-500 animate-pulse' : 'text-slate-400'}`}>
               {isListening ? <Volume2 size={22}/> : <Mic size={22}/>}
             </button>
@@ -220,41 +271,102 @@ const App = () => {
         {apiLoading && (
             <div className="p-10 flex flex-col items-center gap-3 text-blue-500">
                 <Loader2 className="animate-spin" size={32} />
-                <p className="text-[10px] font-black tracking-[0.3em]">FETCHING DATA...</p>
+                <p className="text-[10px] font-black tracking-[0.3em] animate-pulse">TRACKING RESI...</p>
             </div>
         )}
 
-        {/* SCAN RESULT PANEL */}
+        {/* --- MODERN TRACKING RESULT --- */}
         {scanDetail && !apiLoading && (
-          <div className="mb-6 p-5 bg-gradient-to-br from-indigo-600 to-blue-700 rounded-3xl text-white shadow-xl animate-in zoom-in-95">
-            <div className="flex justify-between items-center mb-4">
-              <span className="bg-white/20 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase">AWB: {scanDetail.awb}</span>
-              <button onClick={() => setScanDetail(null)}><X size={16}/></button>
-            </div>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <p className="text-[8px] font-bold opacity-60 uppercase mb-1">Pengirim</p>
-                <p className="font-bold text-xs truncate">{scanDetail.sender}</p>
-              </div>
-              <div className="text-right">
-                <p className="text-[8px] font-bold opacity-60 uppercase mb-1">Penerima</p>
-                <p className="font-bold text-xs truncate">{scanDetail.receiver}</p>
-              </div>
-            </div>
-            <div className="pt-3 border-t border-white/10">
-              <p className="text-[8px] font-bold opacity-60 uppercase mb-1">Alamat Tujuan</p>
-              <p className="text-sm font-black italic uppercase leading-tight">{scanDetail.destination}</p>
+          <div className="mb-8 relative overflow-hidden rounded-3xl text-white shadow-2xl animate-in zoom-in-95 duration-300">
+            {/* Background Gradient */}
+            <div className={`absolute inset-0 bg-gradient-to-br ${scanDetail.status === 'DELIVERED' ? 'from-green-600 to-emerald-800' : 'from-blue-600 to-indigo-900'}`}></div>
+            
+            {/* Glass Texture */}
+            <div className="absolute inset-0 bg-white/5 backdrop-blur-[2px]"></div>
+
+            <div className="relative p-6">
+                {/* Header Card */}
+                <div className="flex justify-between items-start mb-6">
+                    <div>
+                        <div className="flex items-center gap-2 mb-1">
+                            <span className="bg-white/20 backdrop-blur-md px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border border-white/10">
+                                {scanDetail.courier}
+                            </span>
+                            <span className="text-[10px] font-mono opacity-70">{scanDetail.date}</span>
+                        </div>
+                        <h2 className="text-2xl font-black tracking-tight">{scanDetail.awb}</h2>
+                    </div>
+                    <button onClick={() => setScanDetail(null)} className="p-2 bg-black/20 rounded-full hover:bg-black/40 transition-colors"><X size={18}/></button>
+                </div>
+
+                {/* Status Big Badge */}
+                <div className="mb-6 bg-black/20 rounded-2xl p-4 border border-white/10 backdrop-blur-sm">
+                    <div className="flex items-center gap-3 mb-2">
+                        {scanDetail.status === 'DELIVERED' ? <CheckCircle2 className="text-green-300" /> : <Truck className="text-blue-200" />}
+                        <span className="text-xs font-bold opacity-60 uppercase tracking-wider">Status Terkini</span>
+                    </div>
+                    <p className="text-lg font-bold leading-tight uppercase">{scanDetail.status}</p>
+                </div>
+
+                {/* Route Details */}
+                <div className="grid grid-cols-2 gap-4 relative">
+                    {/* Line Connector */}
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white/10 rounded-full flex items-center justify-center border border-white/20">
+                        <ArrowRight size={14} />
+                    </div>
+
+                    <div className="bg-white/10 p-3 rounded-2xl border border-white/5">
+                        <div className="flex items-center gap-2 mb-2 opacity-60">
+                            <Package size={12} />
+                            <span className="text-[9px] font-bold uppercase">Pengirim</span>
+                        </div>
+                        <p className="font-bold text-sm truncate">{scanDetail.sender}</p>
+                        <p className="text-[10px] truncate opacity-70">{scanDetail.origin}</p>
+                    </div>
+
+                    <div className="bg-white/10 p-3 rounded-2xl border border-white/5 text-right">
+                        <div className="flex items-center justify-end gap-2 mb-2 opacity-60">
+                            <span className="text-[9px] font-bold uppercase">Penerima</span>
+                            <User size={12} />
+                        </div>
+                        <p className="font-bold text-sm truncate">{scanDetail.receiver}</p>
+                        <p className="text-[10px] font-black text-yellow-300 uppercase truncate">{scanDetail.destination}</p>
+                    </div>
+                </div>
+
+                {/* History Summary (Last Event) */}
+                {scanDetail.history && scanDetail.history.length > 0 && (
+                     <div className="mt-4 pt-4 border-t border-white/10">
+                        <div className="flex gap-3">
+                            <div className="mt-1 flex flex-col items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_10px_rgba(250,204,21,0.6)]"></div>
+                                <div className="w-0.5 h-full bg-white/20"></div>
+                            </div>
+                            <div>
+                                <p className="text-[10px] font-mono opacity-60">{scanDetail.history[0].date}</p>
+                                <p className="text-xs font-semibold leading-relaxed opacity-90">{scanDetail.history[0].desc}</p>
+                            </div>
+                        </div>
+                     </div>
+                )}
             </div>
           </div>
         )}
 
-        {/* SEARCH RESULTS */}
-        {searchTerm ? (
+        {/* SEARCH RESULTS (LOCAL) */}
+        {searchTerm && !scanDetail ? (
           <div className="animate-in fade-in slide-in-from-bottom-4">
-            <h3 className="text-[10px] font-black opacity-40 uppercase tracking-widest mb-4 flex items-center gap-2"><ArrowRight size={12}/> Hasil Pencarian Pintar</h3>
-            {smartFilteredResults.map(item => <SortCard key={item.id} item={item} isPinned={pinned.some(p => p.id === item.id)} />)}
+            <h3 className="text-[10px] font-black opacity-40 uppercase tracking-widest mb-4 flex items-center gap-2"><ArrowRight size={12}/> Hasil Pencarian Wilayah</h3>
+            {smartFilteredResults.length > 0 ? (
+                smartFilteredResults.map(item => <SortCard key={item.id} item={item} isPinned={pinned.some(p => p.id === item.id)} />)
+            ) : (
+                <div onClick={handleManualSearch} className="p-4 rounded-xl border border-dashed border-blue-300 bg-blue-50 dark:bg-blue-900/20 dark:border-blue-700 text-center cursor-pointer hover:bg-blue-100 transition-colors">
+                    <p className="text-sm text-blue-600 font-bold mb-1">Tidak ada wilayah ditemukan?</p>
+                    <p className="text-xs text-slate-500">Ketuk di sini untuk melacak sebagai <span className="font-mono font-bold">Nomor Resi</span></p>
+                </div>
+            )}
           </div>
-        ) : (
+        ) : !scanDetail && (
           <div className="space-y-8">
             {/* PINNED AREA */}
             {pinned.length > 0 && (
@@ -282,7 +394,7 @@ const App = () => {
 
       {/* FOOTER NAV */}
       <footer className={`fixed bottom-0 w-full p-4 border-t backdrop-blur-xl flex justify-around items-center transition-colors ${darkMode ? 'bg-slate-950/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
-        <button onClick={() => { setActiveTab('search'); setSearchTerm(''); }} className={`flex flex-col items-center gap-1 ${activeTab === 'search' ? 'text-blue-500' : 'text-slate-400'}`}>
+        <button onClick={() => { setActiveTab('search'); setSearchTerm(''); setScanDetail(null); }} className={`flex flex-col items-center gap-1 ${activeTab === 'search' ? 'text-blue-500' : 'text-slate-400'}`}>
             <Search size={22} /> <span className="text-[8px] font-black uppercase">Home</span>
         </button>
         <button onClick={() => setIsScanning(true)} className="w-14 h-14 -mt-12 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-xl shadow-blue-500/40 border-4 border-slate-50 dark:border-slate-950 active:scale-90 transition-transform">
