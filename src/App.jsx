@@ -3,7 +3,7 @@ import {
   Search, Package, MapPin, Mic, History, Star, Sun, Moon, 
   Trash2, AlertCircle, Loader2, Volume2, X, ScanBarcode, 
   Camera, User, Send, ArrowRight, ClipboardList, Info, Zap,
-  Truck, Box, Calendar, CheckCircle2
+  Truck, Box, Calendar, CheckCircle2, Phone, ShieldCheck, Lock
 } from 'lucide-react';
 import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
@@ -21,11 +21,16 @@ const App = () => {
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
   const [activeTab, setActiveTab] = useState('search'); 
   
+  // States untuk fitur HP & Tracking
   const [scanDetail, setScanDetail] = useState(null);
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+  const [tempAwb, setTempAwb] = useState('');
+  const [lastFiveDigits, setLastFiveDigits] = useState('');
+
   const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('ss_history') || '[]'));
   const [pinned, setPinned] = useState(() => JSON.parse(localStorage.getItem('ss_pinned') || '[]'));
 
-  // --- LOGIC: TTS (SUARA ROBOT) ---
+  // --- LOGIC: TTS ---
   const speak = (text) => {
     if ('speechSynthesis' in window) {
       const utterance = new SpeechSynthesisUtterance(text);
@@ -66,7 +71,7 @@ const App = () => {
     localStorage.setItem('ss_pinned', JSON.stringify(pinned));
   }, [darkMode, history, pinned]);
 
-  // --- LOGIC: SMART SEARCH (LOCAL FILTER) ---
+  // --- LOGIC: SMART SEARCH ---
   const smartFilteredResults = useMemo(() => {
     if (!searchTerm.trim()) return [];
     const keywords = searchTerm.toLowerCase().split(/[\s,]+/).filter(k => k.length > 1);
@@ -77,19 +82,28 @@ const App = () => {
     }).slice(0, 15);
   }, [searchTerm, data]);
 
-  // --- LOGIC: PROCESS TRACKING (CORE LOGIC) ---
-  const processTracking = async (awb) => {
+  // --- LOGIC: PROCESS TRACKING (WITH OPTIONAL PHONE) ---
+  const processTracking = async (awb, phoneDigits = '') => {
     setApiLoading(true);
     setScanDetail(null);
-    setIsScanning(false); // Close scanner if open
+    setIsScanning(false);
+    setShowPhoneModal(false);
 
     try {
-      const res = await fetch(`https://api.binderbyte.com/v1/track?api_key=${BINDERBYTE_KEY}&courier=jne&awb=${awb}`);
+      const phoneParam = phoneDigits ? `&phone=${phoneDigits}` : '';
+      const res = await fetch(`https://api.binderbyte.com/v1/track?api_key=${BINDERBYTE_KEY}&courier=jne&awb=${awb}${phoneParam}`);
       const result = await res.json();
 
       if (result.status === 200) {
         const info = result.data;
-        // Construct Detail Object
+        
+        // Bersihkan riwayat dari instruksi API jika phone tidak diisi
+        const rawHistory = info.history || [];
+        const isRestricted = rawHistory.some(h => h.desc.includes("PARAMETER: number"));
+        const cleanHistory = isRestricted 
+            ? [{ date: info.summary.date, desc: "Detail transit terkunci. Masukkan 5 digit HP untuk membuka.", isLocked: true }]
+            : rawHistory;
+
         const detail = {
           awb: info.summary.awb,
           courier: info.summary.courier,
@@ -99,11 +113,12 @@ const App = () => {
           receiver: info.detail.receiver,
           origin: info.detail.origin,
           destination: info.detail.destination.toUpperCase(),
-          history: info.history || [] // Capture history if available
+          history: cleanHistory,
+          isRestricted: isRestricted
         };
         setScanDetail(detail);
         
-        // --- AUTO MATCHING SORT CODE ---
+        // Auto matching sort code
         const destKeywords = detail.destination.split(/[\s,]+/).filter(k => k.length > 3);
         let foundMatch = null;
         for (const word of destKeywords) {
@@ -112,47 +127,28 @@ const App = () => {
         }
 
         if (foundMatch) {
-          speak(`Paket ditemukan. Tujuan ${foundMatch.name}, Kode Sortir ${foundMatch.sortCode}`);
-          // Add to local history (Sort Code)
+          speak(`Paket ditemukan. Kode Sortir ${foundMatch.sortCode}`);
           setHistory(prev => [foundMatch, ...prev.filter(h => h.id !== foundMatch.id)].slice(0, 20));
-        } else {
-          speak(`Data resi ditemukan. Status ${detail.status}`);
         }
       } else {
-        alert("Resi tidak ditemukan atau kurir salah!");
+        alert("Resi tidak ditemukan!");
       }
     } catch (e) { 
-        console.error(e);
-        alert("Gagal menghubungi server pelacakan."); 
+        alert("Koneksi gagal."); 
     } finally { 
         setApiLoading(false); 
     }
   };
 
-  // --- LOGIC: HANDLE MANUAL SEARCH INPUT ---
   const handleManualSearch = () => {
     if (!searchTerm) return;
-
-    // Jika input terlihat seperti resi (angka/huruf panjang > 8 dan tidak ada spasi banyak)
     const isLikelyResi = /^[A-Z0-9]{8,}$/i.test(searchTerm.trim()) && !searchTerm.includes(' ');
-
     if (isLikelyResi) {
-        processTracking(searchTerm.trim());
+        setTempAwb(searchTerm.trim());
+        setShowPhoneModal(true); // Tawarkan opsi masukkan HP
     } else {
-        // Jika bukan resi, biarkan filter lokal bekerja, tapi user mungkin ingin trigger sesuatu
-        speak("Mencari data wilayah " + searchTerm);
+        speak("Mencari wilayah " + searchTerm);
     }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-        handleManualSearch();
-    }
-  };
-
-  // --- LOGIC: SCANNER & VOICE ---
-  const handleAwbScanned = (awb) => {
-    processTracking(awb);
   };
 
   const startVoiceSearch = () => {
@@ -163,14 +159,11 @@ const App = () => {
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
     recognition.onresult = (e) => {
-        const text = e.results[0][0].transcript;
+        const text = e.results[0][0].transcript.replace(/\s/g, '').toUpperCase();
         setSearchTerm(text);
-        // Otomatis cek jika itu resi setelah suara
-        const isResi = /^[0-9]+$/.test(text.replace(/\s/g, ''));
-        if(isResi) {
-             processTracking(text.replace(/\s/g, ''));
-        } else {
-             speak(`Mencari ${text}`);
+        if(/^[A-Z0-9]{8,}$/.test(text)) {
+            setTempAwb(text);
+            setShowPhoneModal(true);
         }
     };
     recognition.start();
@@ -209,6 +202,46 @@ const App = () => {
   return (
     <div className={`min-h-screen pb-24 transition-colors font-sans ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
       
+      {/* PHONE MODAL (OPSIONAL) */}
+      {showPhoneModal && (
+          <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+              <div className={`w-full max-w-xs p-6 rounded-3xl shadow-2xl animate-in zoom-in-95 ${darkMode ? 'bg-slate-900 border border-slate-800' : 'bg-white'}`}>
+                  <div className="flex justify-between items-center mb-4">
+                      <h3 className="font-black text-sm tracking-tight flex items-center gap-2">
+                        <ShieldCheck className="text-blue-500" size={18}/> OPTIMALKAN TRACKING
+                      </h3>
+                      <button onClick={() => setShowPhoneModal(false)}><X size={18}/></button>
+                  </div>
+                  <p className="text-[11px] opacity-60 mb-4 leading-relaxed">Masukkan 5 digit terakhir HP penerima untuk melihat riwayat transit lengkap. Lewati jika tidak perlu.</p>
+                  
+                  <div className={`flex items-center gap-2 p-3 rounded-2xl mb-4 border ${darkMode ? 'bg-black/20 border-slate-700' : 'bg-slate-100 border-slate-200'}`}>
+                    <Phone size={16} className="opacity-40" />
+                    <input 
+                        type="number" 
+                        placeholder="Contoh: 12345"
+                        maxLength={5}
+                        className="bg-transparent border-none outline-none w-full text-sm font-bold"
+                        value={lastFiveDigits}
+                        onChange={(e) => setLastFiveDigits(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                      <button 
+                        onClick={() => processTracking(tempAwb, '')}
+                        className={`py-3 rounded-xl text-[10px] font-black uppercase tracking-widest ${darkMode ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>
+                        Lewati
+                      </button>
+                      <button 
+                        onClick={() => processTracking(tempAwb, lastFiveDigits)}
+                        className="py-3 rounded-xl bg-blue-600 text-white text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-500/30">
+                        Cek Detail
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* SCANNER MODAL */}
       {isScanning && (
         <div className="fixed inset-0 z-[100] bg-black p-4 flex flex-col">
@@ -217,7 +250,7 @@ const App = () => {
                 <button onClick={() => setIsScanning(false)} className="bg-white/10 p-2 rounded-full text-white"><X /></button>
             </div>
             <div className="flex-1 rounded-3xl overflow-hidden border-2 border-white/20">
-                <ScannerContainer onScanSuccess={handleAwbScanned} />
+                <ScannerContainer onScanSuccess={(awb) => { setTempAwb(awb); setShowPhoneModal(true); setIsScanning(false); }} />
             </div>
         </div>
       )}
@@ -227,7 +260,7 @@ const App = () => {
         <div className="max-w-xl mx-auto space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
+              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
                 <Zap size={18} fill="currentColor" />
               </div>
               <h1 className="font-black text-lg tracking-tighter">SONIC<span className="text-blue-600">SORT</span></h1>
@@ -243,20 +276,12 @@ const App = () => {
               type="text" 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Cari Kota / Tempel No. Resi..."
+              onKeyDown={(e) => e.key === 'Enter' && handleManualSearch()}
+              placeholder="Kota / Nomor Resi..."
               className="w-full bg-transparent border-none outline-none font-bold text-sm"
             />
             {searchTerm && <button onClick={() => setSearchTerm('')} className="p-2 opacity-40 hover:opacity-100"><X size={16}/></button>}
-            
-            {/* Tombol Search Manual (Baru) */}
-            <button 
-                onClick={handleManualSearch} 
-                className="p-3 text-blue-600 border-l border-slate-200 dark:border-slate-800"
-            >
-                <Search size={22} />
-            </button>
-
+            <button onClick={handleManualSearch} className="p-3 text-blue-600 border-l border-slate-200 dark:border-slate-800"><Search size={22} /></button>
             <button onClick={startVoiceSearch} className={`p-3 ${isListening ? 'text-red-500 animate-pulse' : 'text-slate-400'}`}>
               {isListening ? <Volume2 size={22}/> : <Mic size={22}/>}
             </button>
@@ -266,86 +291,67 @@ const App = () => {
 
       {/* CONTENT */}
       <main className="max-w-xl mx-auto p-4">
-        
-        {/* API LOADING */}
         {apiLoading && (
             <div className="p-10 flex flex-col items-center gap-3 text-blue-500">
                 <Loader2 className="animate-spin" size={32} />
-                <p className="text-[10px] font-black tracking-[0.3em] animate-pulse">TRACKING RESI...</p>
+                <p className="text-[10px] font-black tracking-[0.3em] animate-pulse">MEMPROSES DATA...</p>
             </div>
         )}
 
-        {/* --- MODERN TRACKING RESULT --- */}
+        {/* --- TRACKING RESULT --- */}
         {scanDetail && !apiLoading && (
           <div className="mb-8 relative overflow-hidden rounded-3xl text-white shadow-2xl animate-in zoom-in-95 duration-300">
-            {/* Background Gradient */}
             <div className={`absolute inset-0 bg-gradient-to-br ${scanDetail.status === 'DELIVERED' ? 'from-green-600 to-emerald-800' : 'from-blue-600 to-indigo-900'}`}></div>
-            
-            {/* Glass Texture */}
             <div className="absolute inset-0 bg-white/5 backdrop-blur-[2px]"></div>
 
             <div className="relative p-6">
-                {/* Header Card */}
                 <div className="flex justify-between items-start mb-6">
                     <div>
                         <div className="flex items-center gap-2 mb-1">
-                            <span className="bg-white/20 backdrop-blur-md px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border border-white/10">
-                                {scanDetail.courier}
-                            </span>
+                            <span className="bg-white/20 backdrop-blur-md px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border border-white/10">{scanDetail.courier}</span>
                             <span className="text-[10px] font-mono opacity-70">{scanDetail.date}</span>
                         </div>
                         <h2 className="text-2xl font-black tracking-tight">{scanDetail.awb}</h2>
                     </div>
-                    <button onClick={() => setScanDetail(null)} className="p-2 bg-black/20 rounded-full hover:bg-black/40 transition-colors"><X size={18}/></button>
+                    <button onClick={() => setScanDetail(null)} className="p-2 bg-black/20 rounded-full hover:bg-black/40"><X size={18}/></button>
                 </div>
 
-                {/* Status Big Badge */}
-                <div className="mb-6 bg-black/20 rounded-2xl p-4 border border-white/10 backdrop-blur-sm">
-                    <div className="flex items-center gap-3 mb-2">
-                        {scanDetail.status === 'DELIVERED' ? <CheckCircle2 className="text-green-300" /> : <Truck className="text-blue-200" />}
-                        <span className="text-xs font-bold opacity-60 uppercase tracking-wider">Status Terkini</span>
+                <div className="mb-6 bg-black/20 rounded-2xl p-4 border border-white/10 backdrop-blur-sm flex items-center gap-4">
+                    {scanDetail.status === 'DELIVERED' ? <CheckCircle2 className="text-green-300" size={32}/> : <Truck className="text-blue-200" size={32}/>}
+                    <div>
+                        <span className="text-xs font-bold opacity-60 uppercase tracking-wider block">Status Terkini</span>
+                        <p className="text-lg font-black uppercase leading-none">{scanDetail.status}</p>
                     </div>
-                    <p className="text-lg font-bold leading-tight uppercase">{scanDetail.status}</p>
                 </div>
 
-                {/* Route Details */}
                 <div className="grid grid-cols-2 gap-4 relative">
-                    {/* Line Connector */}
-                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white/10 rounded-full flex items-center justify-center border border-white/20">
-                        <ArrowRight size={14} />
-                    </div>
-
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white/10 rounded-full flex items-center justify-center border border-white/20"><ArrowRight size={14} /></div>
                     <div className="bg-white/10 p-3 rounded-2xl border border-white/5">
-                        <div className="flex items-center gap-2 mb-2 opacity-60">
-                            <Package size={12} />
-                            <span className="text-[9px] font-bold uppercase">Pengirim</span>
-                        </div>
+                        <span className="text-[9px] font-bold uppercase opacity-60 block mb-1">Pengirim</span>
                         <p className="font-bold text-sm truncate">{scanDetail.sender}</p>
                         <p className="text-[10px] truncate opacity-70">{scanDetail.origin}</p>
                     </div>
-
                     <div className="bg-white/10 p-3 rounded-2xl border border-white/5 text-right">
-                        <div className="flex items-center justify-end gap-2 mb-2 opacity-60">
-                            <span className="text-[9px] font-bold uppercase">Penerima</span>
-                            <User size={12} />
-                        </div>
+                        <span className="text-[9px] font-bold uppercase opacity-60 block mb-1">Penerima</span>
                         <p className="font-bold text-sm truncate">{scanDetail.receiver}</p>
                         <p className="text-[10px] font-black text-yellow-300 uppercase truncate">{scanDetail.destination}</p>
                     </div>
                 </div>
 
-                {/* History Summary (Last Event) */}
+                {/* --- HISTORY SECTION --- */}
                 {scanDetail.history && scanDetail.history.length > 0 && (
                      <div className="mt-4 pt-4 border-t border-white/10">
-                        <div className="flex gap-3">
-                            <div className="mt-1 flex flex-col items-center gap-1">
-                                <div className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_10px_rgba(250,204,21,0.6)]"></div>
-                                <div className="w-0.5 h-full bg-white/20"></div>
+                        <div className="flex gap-3 items-center">
+                            {scanDetail.isRestricted ? <Lock size={16} className="text-yellow-400 shrink-0"/> : <div className="w-2 h-2 rounded-full bg-yellow-400 shrink-0 shadow-[0_0_10px_rgba(250,204,21,0.6)]"></div>}
+                            <div className="flex-1">
+                                <p className="text-[10px] font-mono opacity-60">{scanDetail.isRestricted ? "HISTORY TERBATAS" : scanDetail.history[0].date}</p>
+                                <p className={`text-xs font-semibold leading-relaxed ${scanDetail.isRestricted ? 'italic opacity-70' : 'opacity-90'}`}>
+                                    {scanDetail.history[0].desc}
+                                </p>
                             </div>
-                            <div>
-                                <p className="text-[10px] font-mono opacity-60">{scanDetail.history[0].date}</p>
-                                <p className="text-xs font-semibold leading-relaxed opacity-90">{scanDetail.history[0].desc}</p>
-                            </div>
+                            {scanDetail.isRestricted && (
+                                <button onClick={() => setShowPhoneModal(true)} className="text-[9px] font-black bg-white/20 px-2 py-1 rounded-lg uppercase">Buka</button>
+                            )}
                         </div>
                      </div>
                 )}
@@ -356,34 +362,32 @@ const App = () => {
         {/* SEARCH RESULTS (LOCAL) */}
         {searchTerm && !scanDetail ? (
           <div className="animate-in fade-in slide-in-from-bottom-4">
-            <h3 className="text-[10px] font-black opacity-40 uppercase tracking-widest mb-4 flex items-center gap-2"><ArrowRight size={12}/> Hasil Pencarian Wilayah</h3>
+            <h3 className="text-[10px] font-black opacity-40 uppercase tracking-widest mb-4 flex items-center gap-2"><ArrowRight size={12}/> Hasil Pencarian</h3>
             {smartFilteredResults.length > 0 ? (
                 smartFilteredResults.map(item => <SortCard key={item.id} item={item} isPinned={pinned.some(p => p.id === item.id)} />)
             ) : (
-                <div onClick={handleManualSearch} className="p-4 rounded-xl border border-dashed border-blue-300 bg-blue-50 dark:bg-blue-900/20 dark:border-blue-700 text-center cursor-pointer hover:bg-blue-100 transition-colors">
-                    <p className="text-sm text-blue-600 font-bold mb-1">Tidak ada wilayah ditemukan?</p>
-                    <p className="text-xs text-slate-500">Ketuk di sini untuk melacak sebagai <span className="font-mono font-bold">Nomor Resi</span></p>
+                <div onClick={handleManualSearch} className="p-10 rounded-3xl border border-dashed border-slate-300 dark:border-slate-800 text-center cursor-pointer hover:bg-blue-500/5 transition-colors">
+                    <Package className="mx-auto mb-3 opacity-20" size={40}/>
+                    <p className="text-sm font-bold opacity-60">Tidak ada wilayah ditemukan.</p>
+                    <p className="text-[10px] uppercase tracking-widest text-blue-500 mt-2 font-black">Klik untuk Cek Resi</p>
                 </div>
             )}
           </div>
         ) : !scanDetail && (
           <div className="space-y-8">
-            {/* PINNED AREA */}
             {pinned.length > 0 && (
               <div>
-                <h3 className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-4 flex items-center gap-2"><Star size={12} fill="currentColor"/> Memory Hub (Pinned)</h3>
+                <h3 className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-4 flex items-center gap-2"><Star size={12} fill="currentColor"/> Pinned Wilayah</h3>
                 {pinned.map(item => <SortCard key={`p-${item.id}`} item={item} isPinned={true} />)}
               </div>
             )}
-
-            {/* HISTORY AREA */}
             <div>
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-[10px] font-black opacity-40 uppercase tracking-widest flex items-center gap-2"><History size={12}/> Riwayat Sortir</h3>
                 {history.length > 0 && <button onClick={() => setHistory([])} className="text-red-500 font-bold text-[10px]">CLEAR</button>}
               </div>
               {history.length === 0 ? (
-                <div className="py-20 text-center opacity-20"><Package size={48} className="mx-auto mb-2" /><p className="font-bold text-xs">Belum ada paket disortir</p></div>
+                <div className="py-20 text-center opacity-20"><Package size={48} className="mx-auto mb-2" /><p className="font-bold text-xs">Belum ada aktivitas</p></div>
               ) : (
                 history.map(item => <SortCard key={`h-${item.id}`} item={item} isPinned={pinned.some(p => p.id === item.id)} />)
               )}
@@ -408,7 +412,6 @@ const App = () => {
   );
 };
 
-// --- HELPER COMPONENT: SCANNER ---
 const ScannerContainer = ({ onScanSuccess }) => {
     useEffect(() => {
         const scanner = new Html5QrcodeScanner("reader", { 
