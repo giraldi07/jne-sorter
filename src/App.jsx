@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { fetchDestinationCodes } from './api';
 import { 
   Search, Package, MapPin, Mic, History, Star, Sun, Moon, 
   Trash2, AlertCircle, Loader2, Volume2, X, ScanBarcode, 
@@ -42,26 +43,24 @@ const App = () => {
 
   // --- LOGIC: DATABASE LOAD ---
   useEffect(() => {
-    const loadCSV = async () => {
+    const loadSupabaseData = async () => {
       try {
-        const response = await fetch('/jne_destination_code.csv');
-        const text = await response.text();
-        const lines = text.split('\n').slice(1);
-        const parsed = lines.map(line => {
-          const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim());
-          if (cols.length < 3) return null;
-          return { 
-            id: `${cols[0]}-${cols[1]}`, 
-            code: cols[1], 
-            name: cols[2], 
-            sortCode: cols[1]?.substring(0, 3).toUpperCase() || 'UNK' 
-          };
-        }).filter(Boolean);
+        const result = await fetchDestinationCodes();
+        // Pastikan field sesuai dengan struktur tabel Supabase
+        const parsed = result.map(row => ({
+          id: row.id || `${row.code}-${row.name}`,
+          code: row.code,
+          name: row.name,
+          sortCode: row.sortCode || row.code?.substring(0, 3).toUpperCase() || 'UNK',
+        }));
         setData(parsed);
-      } catch (err) { console.error("CSV Load Error"); }
-      finally { setLoading(false); }
+      } catch (err) {
+        console.error('Supabase Load Error', err);
+      } finally {
+        setLoading(false);
+      }
     };
-    loadCSV();
+    loadSupabaseData();
   }, []);
 
   useEffect(() => {
